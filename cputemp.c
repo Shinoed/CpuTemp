@@ -223,10 +223,10 @@ static void read_theme(void)
     light_theme = v != 0;
 }
 
-static HFONT make_font(int h)
+static HFONT make_font(int h, const wchar_t *face)
 {
     return CreateFontW(-h, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
-                       ANTIALIASED_QUALITY, 0, L"Bahnschrift"); // 窄體數字，小尺寸也清楚
+                       ANTIALIASED_QUALITY, 0, face);
 }
 
 // 把文字畫到草稿畫布 (黑底白字)，回傳實際有墨水的範圍
@@ -251,17 +251,18 @@ static int render_text(const wchar_t *text, HFONT f, RECT *bb)
 }
 
 // 找出能塞進圖示的最大字級 (只在啟動時做一次)
-static HFONT fit_font(const wchar_t *sample)
+// Bahnschrift 是窄體數字，小尺寸也清楚；三個字以上改用更窄的 Condensed，字才不會縮太小
+static HFONT fit_font(const wchar_t *sample, const wchar_t *face)
 {
     for (int h = icon_size * 3 / 2; h > 6; h--) {
-        HFONT f = make_font(h);
+        HFONT f = make_font(h, face);
         RECT bb;
         if (render_text(sample, f, &bb) && bb.right - bb.left + 1 <= icon_size
             && bb.bottom - bb.top + 1 <= icon_size * 88 / 100)
             return f;
         DeleteObject(f);
     }
-    return make_font(icon_size / 2);
+    return make_font(icon_size / 2, face);
 }
 
 static DWORD *make_dib(int w, HBITMAP *out)
@@ -272,18 +273,19 @@ static DWORD *make_dib(int w, HBITMAP *out)
     return p;
 }
 
-static void init_icon_canvas(void)
+// size = 圖示邊長；已宣告 DPI aware，SM_CXSMICON 在 100%=16、150%=24、200%=32 (test_icons.c 會直接指定)
+static void init_icon_canvas(int size)
 {
-    icon_size = GetSystemMetrics(SM_CXSMICON); // 已宣告 DPI aware：100%=16、150%=24、200%=32
+    icon_size = size;
     big = icon_size * 2;
     mem_dc = CreateCompatibleDC(NULL);
     pixels = make_dib(icon_size, &dib);
     big_px = make_dib(big, &big_dib);
     SetBkMode(mem_dc, TRANSPARENT);
     SetTextColor(mem_dc, RGB(255, 255, 255));
-    font2 = fit_font(L"88");
-    font3 = fit_font(L"100");
-    font_dec = fit_font(L"8.8"); // 小數點很窄，比三位數能用更大的字
+    font2 = fit_font(L"88", L"Bahnschrift");
+    font3 = fit_font(L"100", L"Bahnschrift Condensed");
+    font_dec = fit_font(L"8.8", L"Bahnschrift Condensed");
 }
 
 // 量出字形實際範圍後置中貼到圖示，亮度轉成 alpha，得到反鋸齒的透明圖示
@@ -531,7 +533,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (!init_sensor() && pio) { p_close(pio); pio = NULL; }
     init_fans();
     read_theme();
-    init_icon_canvas();
+    init_icon_canvas(GetSystemMetrics(SM_CXSMICON));
 
     nid.cbSize = sizeof nid;
     nid.hWnd = hwnd;

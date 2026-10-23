@@ -46,16 +46,20 @@ int main(int argc, char **argv)
     const int n = sizeof texts / sizeof *texts;
 
     for (int size = 16; size <= 32; size += 8) { // 100% / 150% / 200% 縮放
-        icon_size = size;
-        big = size * 2;
-        mem_dc = CreateCompatibleDC(NULL);
-        pixels = make_dib(icon_size, &dib);
-        big_px = make_dib(big, &big_dib);
-        SetBkMode(mem_dc, TRANSPARENT);
-        SetTextColor(mem_dc, RGB(255, 255, 255));
-        font2 = fit_font(L"88");
-        font3 = fit_font(L"100");
-        font_dec = fit_font(L"8.8");
+        init_icon_canvas(size);
+
+        // GDI 找不到字型時會默默換成別的，確認拿到的是指定的字型
+        static const wchar_t *want[] = { L"Bahnschrift", L"Bahnschrift Condensed", L"Bahnschrift Condensed" };
+        HFONT fonts[] = { font2, font3, font_dec };
+        for (int i = 0; i < 3; i++) {
+            wchar_t face[64];
+            SelectObject(mem_dc, fonts[i]);
+            GetTextFaceW(mem_dc, 64, face);
+            if (wcscmp(face, want[i])) {
+                printf("FAIL %d px: font %d is \"%ls\", want \"%ls\"\n", size, i, face, want[i]);
+                fails++;
+            }
+        }
 
         int two = ink_height(L"49"), dec = ink_height(L"2.7");
         printf("%2d px: \"49\" %d px tall, \"100\" %d px, \"2.7\" %d px\n", size, two, ink_height(L"100"), dec);
