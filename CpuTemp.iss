@@ -2,7 +2,7 @@
 ; Build: build_setup.bat  ->  dist\CpuTemp_Setup_<version>.exe
 
 #define AppName    "CpuTemp"
-#define AppVersion "1.0.7"
+#define AppVersion "1.0.8"
 #define AppExe     "CpuTempNative.exe"
 
 [Setup]
@@ -130,7 +130,9 @@ end;
 
 function PowerShell: String;
 begin
-  Result := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  // sysnative: always the 64-bit PowerShell, even before 64-bit install mode is active
+  // (InitializeSetup); the 32-bit one would look in Program Files (x86)
+  Result := ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe');
 end;
 
 { Close the tray app gracefully so it removes its icon; force-kill only as a fallback }

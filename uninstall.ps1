@@ -10,6 +10,20 @@ param([switch]$Quiet, [switch]$RemovePawnIO, [switch]$NoConfirm,
       [string]$InstallDir = (Join-Path $env:ProgramFiles 'CpuTemp'),
       [string]$KeyRoot = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall')
 
+# Setup (a 32-bit process) can start the 32-bit PowerShell, which sees Program Files (x86)
+# and the WOW6432Node registry view, so nothing of the 64-bit install was found.
+# Re-run in 64-bit PowerShell with the same arguments.
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    $ps64 = Join-Path $env:WINDIR 'sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`"")
+    foreach ($p in $PSBoundParameters.GetEnumerator()) {
+        if ($p.Value -is [switch]) { if ($p.Value) { $argList += "-$($p.Key)" } }
+        else { $argList += "-$($p.Key)", "`"$($p.Value)`"" }
+    }
+    $proc = Start-Process $ps64 -ArgumentList $argList -Wait -PassThru -WindowStyle Hidden
+    exit $proc.ExitCode
+}
+
 $AppName = 'CpuTemp'
 $Dir     = $InstallDir
 $Task    = 'CpuTempTray'
