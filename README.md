@@ -4,6 +4,10 @@
 
 A tiny native Windows tray tool that shows the Intel CPU package temperature (and per-core temperatures in the tooltip).
 
+## 下載
+
+到 [Releases](https://github.com/Shinoed/CpuTemp/releases) 下載最新的 `CpuTemp_Setup_<version>.exe` 並執行。程式碼簽章說明見 [Code signing policy](#code-signing-policy)。
+
 ## 功能
 
 - 工作列圖示直接顯示 CPU 封裝溫度，70 °C 以上變黃、85 °C 以上變紅
