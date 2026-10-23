@@ -28,14 +28,17 @@ public static class Native {
     static extern bool EnumResourceNames(IntPtr h, IntPtr type, EnumProc cb, IntPtr p);
     delegate bool EnumProc(IntPtr h, IntPtr type, IntPtr name, IntPtr p);
     [DllImport("user32", CharSet = CharSet.Unicode)]
-    public static extern IntPtr FindWindow(string cls, string title);
+    static extern IntPtr FindWindow(string cls, string title);
     [DllImport("user32")] public static extern bool PostMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
     [DllImport("user32", CharSet = CharSet.Unicode)]
     static extern int GetWindowText(IntPtr w, System.Text.StringBuilder s, int n);
 
+    // Called from C#: PowerShell would pass $null as "" and match only an empty title
+    public static IntPtr Window() { return FindWindow("CpuTempTray", null); }
+
     // The app mirrors its temperature tooltip into its hidden window's title
     public static string Tooltip() {
-        IntPtr w = FindWindow("CpuTempTray", null);
+        IntPtr w = Window();
         if (w == IntPtr.Zero) return null;
         var s = new System.Text.StringBuilder(256);
         GetWindowText(w, s, s.Capacity);
@@ -55,7 +58,7 @@ public static class Native {
 '@
 
 function Command($id) {
-    $w = [Native]::FindWindow('CpuTempTray', $null)
+    $w = [Native]::Window()
     if ($w -eq [IntPtr]::Zero) { return $false }
     [Native]::PostMessage($w, 0x0111, [IntPtr]$id, [IntPtr]::Zero) # WM_COMMAND
 }
@@ -98,7 +101,7 @@ New-Item $Reg -Force | Out-Null
 Set-ItemProperty $Reg Interval 99 -Type DWord
 Set-ItemProperty $Reg ShowUsage 1 -Type DWord
 Start-Process $Exe
-Check 'starts with an invalid saved interval' (WaitFor { (Running) -and [Native]::FindWindow('CpuTempTray', $null) -ne [IntPtr]::Zero })
+Check 'starts with an invalid saved interval' (WaitFor { (Running) -and [Native]::Window() -ne [IntPtr]::Zero })
 Start-Sleep 3
 Check 'still running after 3 s' (Running)
 
