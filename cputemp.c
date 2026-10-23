@@ -51,7 +51,7 @@ static int      show_fan = 1, last_fan = -9999, fan_now = -1; // fan_now = 最�
 static wchar_t  fan_line[40];                                 // "風扇 2345 RPM"，沒有風扇時為空
 static ULONGLONG prev_idle, prev_total;
 static HICON    cur_icon, cur_icon_use, cur_icon_fan;
-static HFONT    font2, font3;          // 兩位數 / 三位數用
+static HFONT    font2, font3, font_dec; // 兩位數 / 三位數 / 一位小數 (風扇 "2.7") 用
 static HDC      mem_dc;
 static HBITMAP  dib, big_dib;
 static DWORD   *pixels, *big_px;       // big = 2 倍大的草稿畫布，用來量字形實際範圍
@@ -283,6 +283,7 @@ static void init_icon_canvas(void)
     SetTextColor(mem_dc, RGB(255, 255, 255));
     font2 = fit_font(L"88");
     font3 = fit_font(L"100");
+    font_dec = fit_font(L"8.8"); // 小數點很窄，比三位數能用更大的字
 }
 
 // 量出字形實際範圍後置中貼到圖示，亮度轉成 alpha，得到反鋸齒的透明圖示
@@ -301,7 +302,8 @@ static HICON make_icon(const wchar_t *text, COLORREF color, int bar)
                 pixels[y * icon_size + x] = (a << 24) | ((r * a / 255) << 16) | ((g * a / 255) << 8) | (b * a / 255);
             }
     }
-    if (render_text(text, wcslen(text) > 2 ? font3 : font2, &bb)) {
+    HFONT f = wcschr(text, L'.') ? font_dec : wcslen(text) > 2 ? font3 : font2;
+    if (render_text(text, f, &bb)) {
         int w = bb.right - bb.left + 1, h = bb.bottom - bb.top + 1;
         int ox = (icon_size - w + 1) / 2 - bb.left, oy = (icon_size - bar_h - h + 1) / 2 - bb.top;
         for (int y = bb.top; y <= bb.bottom; y++)
