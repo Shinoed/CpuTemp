@@ -63,7 +63,8 @@ foreach ($f in 'CpuTempNative.exe', $Setup) {
     $leaf = Split-Path $f -Leaf
     Check "$leaf has an icon" ([Native]::IconGroups((Resolve-Path $f)) -gt 0)
     $vi = (Get-Item $f).VersionInfo
-    Check "$leaf company is $Publisher" ($vi.CompanyName -eq $Publisher) "(got '$($vi.CompanyName)')"
+    # Inno Setup pads the setup's version strings with spaces
+    Check "$leaf company is $Publisher" ($vi.CompanyName.Trim() -eq $Publisher) "(got '$($vi.CompanyName)')"
     Check "$leaf version is $Version" ($vi.ProductVersion -like "$Version*") "(got '$($vi.ProductVersion)')"
 }
 
