@@ -2,7 +2,7 @@
 ; Build: build_setup.bat  ->  dist\CpuTemp_Setup_<version>.exe
 
 #define AppName    "CpuTemp"
-#define AppVersion "1.0.5"
+#define AppVersion "1.0.6"
 #define AppExe     "CpuTempNative.exe"
 
 [Setup]
@@ -24,8 +24,9 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=no
-UninstallDisplayName={#AppName} (CPU 溫度工作列工具)
-UninstallDisplayIcon={app}\{#AppExe}
+; No Inno uninstaller: the unsigned unins000.exe is blocked by Smart App Control.
+; uninstall.ps1 (run by the signed powershell.exe) is registered in Settings > Apps instead.
+Uninstallable=no
 
 [Languages]
 Name: "zh_tw"; MessagesFile: "compiler:Languages\ChineseTraditional.isl"
@@ -42,8 +43,6 @@ zh_tw.PawnIONotRunning=PawnIO 驅動程式已安裝但沒有在執行。請重�
 en.PawnIONotRunning=The PawnIO driver is installed but not running. Please reboot and run setup again.
 zh_tw.TaskFailed=無法建立開機自動啟動的排程工作。
 en.TaskFailed=Could not register the startup task.
-zh_tw.RemovePawnIO=要一併移除 PawnIO 驅動程式嗎？%n%n其他硬體監控工具 (例如 LibreHardwareMonitor、FanControl) 可能也需要它。
-en.RemovePawnIO=Also remove the PawnIO driver?%n%nOther hardware tools (e.g. LibreHardwareMonitor, FanControl) may also need it.
 
 zh_tw.AlreadyInstalled=CpuTemp 已經安裝在這台電腦上
 en.AlreadyInstalled=CpuTemp is already installed
@@ -78,17 +77,33 @@ en.ReadyTask=Start automatically when you sign in to Windows
 [Files]
 Source: "{#AppExe}";             DestDir: "{app}"; Flags: ignoreversion
 Source: "task.ps1";              DestDir: "{app}"; Flags: ignoreversion
+Source: "uninstall.ps1";         DestDir: "{app}"; Flags: ignoreversion
 Source: "IntelMSR.LICENSE.txt";  DestDir: "{app}"; Flags: ignoreversion
 Source: "PawnIO_setup.exe";      Flags: dontcopy
 
 [InstallDelete]
-; Leftovers from the earlier script-based installer
+; Leftovers from earlier versions (script installer, Inno uninstaller)
 Type: files; Name: "{app}\common.ps1"
-Type: files; Name: "{app}\uninstall.ps1"
+Type: files; Name: "{app}\unins000.exe"
+Type: files; Name: "{app}\unins000.dat"
+
+#define ArpKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\" + AppName
 
 [Registry]
-; Settings > Apps entry written by the earlier script-based installer
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppName}"; Flags: deletekey
+; Entry from 1.0.0-1.0.5, which used the Inno uninstaller
+Root: HKLM; Subkey: "{#ArpKey}_is1"; Flags: deletekey
+; Settings > Apps entry pointing at uninstall.ps1
+Root: HKLM; Subkey: "{#ArpKey}"; Flags: deletekey
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "DisplayName";          ValueData: "{#AppName} (CPU 溫度工作列工具)"
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "DisplayVersion";       ValueData: "{#AppVersion}"
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "Publisher";            ValueData: "{#AppName}"
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "DisplayIcon";          ValueData: "{app}\{#AppExe}"
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "InstallLocation";      ValueData: "{app}"
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "UninstallString";      ValueData: "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\uninstall.ps1"""
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "QuietUninstallString"; ValueData: "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\uninstall.ps1"" -Quiet"
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: dword;  ValueName: "NoModify";             ValueData: 1
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: dword;  ValueName: "NoRepair";             ValueData: 1
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: dword;  ValueName: "EstimatedSize";        ValueData: 64
 
 [Code]
 const
@@ -172,20 +187,17 @@ begin
   Result := Result + Space + CustomMessage('ReadyTask');
 end;
 
-function GetUninstaller: String;
+{ Current (script) or 1.0.0-1.0.5 (Inno uninstaller) Settings > Apps entry }
+function IsInstalled: Boolean;
 begin
-  Result := '';
-  if RegQueryStringValue(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppName}_is1',
-       'UninstallString', Result) then
-    Result := RemoveQuotes(Result);
-  if (Result <> '') and not FileExists(Result) then
-    Result := '';
+  Result := RegKeyExists(HKLM64, '{#ArpKey}') or RegKeyExists(HKLM64, '{#ArpKey}_is1');
 end;
 
-{ Already installed: let the same setup exe reinstall/update or uninstall }
+{ Already installed: let the same setup exe reinstall/update or uninstall.
+  Uninstall runs the bundled uninstall.ps1, so it also works for installs whose
+  own uninstaller is missing or blocked }
 function InitializeSetup: Boolean;
 var
-  Uninstaller: String;
   RC: Integer;
 begin
   Result := IsIntel;
@@ -195,8 +207,7 @@ begin
     Exit;
   end;
 
-  Uninstaller := GetUninstaller;
-  if (Uninstaller = '') or WizardSilent then Exit;
+  if not IsInstalled or WizardSilent then Exit;
 
   case TaskDialogMsgBox(CustomMessage('AlreadyInstalled'), CustomMessage('ChooseAction'),
          mbConfirmation, MB_YESNOCANCEL, [CustomMessage('ActionReinstall'),
@@ -204,7 +215,9 @@ begin
     IDYES: Result := True;
     IDNO:
       begin
-        Exec(Uninstaller, '', '', SW_SHOW, ewWaitUntilTerminated, RC);
+        ExtractTemporaryFile('uninstall.ps1');
+        Exec(PowerShell, '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+          ExpandConstant('{tmp}\uninstall.ps1') + '" -NoConfirm', '', SW_HIDE, ewWaitUntilTerminated, RC);
         Result := False;
       end;
   else
@@ -242,28 +255,5 @@ begin
       SuppressibleMsgBox(CustomMessage('PawnIONotRunning'), mbError, MB_OK, IDOK)
     else if RC <> 0 then
       SuppressibleMsgBox(CustomMessage('TaskFailed') + ' (' + IntToStr(RC) + ')', mbError, MB_OK, IDOK);
-  end;
-end;
-
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  RC: Integer;
-  PawnUninstaller: String;
-begin
-  if CurUninstallStep = usUninstall then
-  begin
-    StopApp;
-    Exec(PowerShell, '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\task.ps1') +
-      '" -Uninstall', '', SW_HIDE, ewWaitUntilTerminated, RC);
-  end;
-
-  if CurUninstallStep = usPostUninstall then
-  begin
-    { uninstall.exe is the same binary as PawnIO's setup: without -uninstall it tries to
-      install into its own (locked) folder and fails with 0xC0000043 }
-    PawnUninstaller := ExpandConstant('{commonpf64}\PawnIO\uninstall.exe');
-    if FileExists(PawnUninstaller) and not UninstallSilent and
-       (MsgBox(CustomMessage('RemovePawnIO'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
-      Exec(PawnUninstaller, '-uninstall -silent', '', SW_HIDE, ewWaitUntilTerminated, RC);
   end;
 end;
