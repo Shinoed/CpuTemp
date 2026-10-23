@@ -78,6 +78,13 @@ jobs:
           "$env:RUNNER_TEMP\w64devkit\bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
           $inno | Out-File $env:GITHUB_PATH -Append -Encoding utf8
 
+      - name: Unit tests
+        run: |
+          gcc -std=c11 -Wall -Werror -o test_usage.exe test_usage.c
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\test_usage.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Build CpuTempNative.exe
         run: |
           gcc --version | Select-Object -First 1

@@ -12,6 +12,7 @@
 #include <shellapi.h>
 #include <imm.h>
 #include <wchar.h>
+#include "usage.h"
 
 #define WM_TRAY      (WM_APP + 1)
 #define ID_TIMER     1
@@ -136,9 +137,7 @@ static int read_usage(void)
     prev_idle = i;
     prev_total = t;
     last_tick = now;
-    if (first || dt == 0) return last = -1;
-    if (di > dt) di = dt;
-    return last = (int)((dt - di) * 100 / dt);
+    return last = first ? -1 : usage_percent(di, dt);
 }
 
 static int reg_get(const wchar_t *name, int def)

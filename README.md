@@ -87,6 +87,7 @@ SignPath 專案的兩個 artifact configuration (GitHub artifact 是 zip，內�
 | 檔案 | 說明 |
 |---|---|
 | `cputemp.c` | 工作列程式 |
+| `usage.h`, `test_usage.c` | CPU 使用率計算與其單元測試 (CI 會執行) |
 | `cputemp.rc`, `app.manifest` | 資源：manifest、版本資訊、內嵌的 IntelMSR 模組 |
 | `IntelMSR.bin` | PawnIO 的 IntelMSR 模組 ([PawnIO.Modules](https://github.com/namazso/PawnIO.Modules)) |
 | `CpuTemp.iss` | Inno Setup 安裝程式腳本 |
@@ -115,6 +116,8 @@ All team members use multi-factor authentication for GitHub and SignPath.
 This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. CpuTemp only reads CPU temperature and usage locally; the app, its setup script and its PowerShell helpers contain no network code.
 
 PawnIO is a third-party driver; see [pawnio.eu](https://pawnio.eu) for its terms.
+
+Security issues: see [SECURITY.md](SECURITY.md). Version history: see [CHANGELOG.md](CHANGELOG.md).
 
 ## 授權
 
