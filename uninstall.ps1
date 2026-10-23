@@ -5,13 +5,10 @@
 #   -RemovePawnIO also uninstall PawnIO
 param([switch]$Quiet, [switch]$RemovePawnIO)
 
-$AppName = 'CpuTemp'
-$Dir     = Join-Path $env:ProgramFiles $AppName
-$Task    = 'CpuTempTray'
-$ArpKey  = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
+. (Join-Path $PSScriptRoot 'common.ps1')
 
 # Re-launch elevated when started from Settings > Apps without admin rights
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')) {
+if (-not (Test-Admin)) {
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
     if ($Quiet) { $argList += '-Quiet' }
     if ($RemovePawnIO) { $argList += '-RemovePawnIO' }
@@ -19,32 +16,49 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     return
 }
 
-function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 Set-Location $env:TEMP   # do not hold the install folder open
+$failed = @()
 
 Step 'Stopping CpuTemp'
-Get-Process CpuTempNative -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Milliseconds 300
+try { Stop-CpuTemp } catch { $failed += $_.Exception.Message }
 
 Step 'Removing startup task'
-Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
-
-Step 'Removing Settings > Apps entry'
-Remove-Item $ArpKey -Recurse -Force -ErrorAction SilentlyContinue
+if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
+    try { Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction Stop }
+    catch { $failed += "Task: $($_.Exception.Message)" }
+}
 
 Step "Removing $Dir"
-Remove-Item $Dir -Recurse -Force -ErrorAction SilentlyContinue
+if (Test-Path $Dir) {
+    try { Remove-Item $Dir -Recurse -Force -ErrorAction Stop }
+    catch { $failed += "Files: $($_.Exception.Message)" }
+}
+
+# Remove the Settings > Apps entry last, and only if everything else is gone,
+# so a failed uninstall can still be retried from there
+if (-not $failed) {
+    Step 'Removing Settings > Apps entry'
+    try { Remove-Item $ArpKey -Recurse -Force -ErrorAction Stop }
+    catch { if (Test-Path $ArpKey) { $failed += "Registry: $($_.Exception.Message)" } }
+}
 
 $pawnUninstaller = Join-Path $env:ProgramFiles 'PawnIO\uninstall.exe'
-if (-not $Quiet -and -not $RemovePawnIO -and (Test-Path $pawnUninstaller)) {
+if (-not $failed -and -not $Quiet -and -not $RemovePawnIO -and (Test-Path $pawnUninstaller)) {
     $ans = Read-Host 'Also remove the PawnIO driver? Other hardware tools may need it. (y/N)'
     $RemovePawnIO = $ans -match '^[yY]'
 }
-if ($RemovePawnIO -and (Test-Path $pawnUninstaller)) {
+if (-not $failed -and $RemovePawnIO -and (Test-Path $pawnUninstaller)) {
     Step 'Launching PawnIO uninstaller'
     Start-Process $pawnUninstaller -Wait
 }
 
 Write-Host ''
-Write-Host 'CpuTemp has been removed.' -ForegroundColor Green
+if ($failed) {
+    Write-Host 'Uninstall did not complete:' -ForegroundColor Red
+    $failed | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+    Write-Host 'Close anything using the CpuTemp folder and run the uninstaller again.'
+} else {
+    Write-Host 'CpuTemp has been removed.' -ForegroundColor Green
+}
 if (-not $Quiet) { Read-Host 'Press Enter to close' | Out-Null }
+if ($failed) { exit 1 }

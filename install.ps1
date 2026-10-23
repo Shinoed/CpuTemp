@@ -1,28 +1,19 @@
 # CpuTemp installer
-#  - Installs the PawnIO driver if it is missing
+#  - Installs the PawnIO driver if it is missing and makes sure it is running
 #  - Copies CpuTempNative.exe to Program Files\CpuTemp
 #  - Registers a logon task (highest privileges) so it starts with Windows
 #  - Adds an entry to Settings > Apps so it can be uninstalled from there
 # Run via Install.bat (it elevates automatically).
 
 $ErrorActionPreference = 'Stop'
-$AppName = 'CpuTemp'
-$Version = '1.0.0'
-$Dir     = Join-Path $env:ProgramFiles $AppName
-$Exe     = Join-Path $Dir 'CpuTempNative.exe'
-$Task    = 'CpuTempTray'
-$ArpKey  = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
-$Src     = $PSScriptRoot
+$Src = $PSScriptRoot
+. (Join-Path $Src 'common.ps1')
 
-function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
-
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')) {
-    throw 'Administrator rights are required. Please run Install.bat.'
-}
+if (-not (Test-Admin)) { throw 'Administrator rights are required. Please run Install.bat.' }
 if ((Get-CimInstance Win32_Processor | Select-Object -First 1).Manufacturer -ne 'GenuineIntel') {
     throw 'Only Intel CPUs are supported.'
 }
-foreach ($f in 'CpuTempNative.exe', 'uninstall.ps1') {
+foreach ($f in 'CpuTempNative.exe', 'uninstall.ps1', 'common.ps1') {
     if (-not (Test-Path (Join-Path $Src $f))) { throw "Missing $f next to the installer (build it with build_c.bat first)." }
 }
 
@@ -35,20 +26,27 @@ if (-not (Get-Service PawnIO -ErrorAction SilentlyContinue)) {
     Start-Process $setup -Wait
     if (-not (Get-Service PawnIO -ErrorAction SilentlyContinue)) { throw 'PawnIO installation was not completed.' }
 }
+$svc = Get-Service PawnIO
+if ($svc.Status -ne 'Running') {
+    try { Start-Service PawnIO; $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(10)) }
+    catch { throw "PawnIO driver is installed but not running ($($_.Exception.Message)). Try rebooting, then run Install.bat again." }
+}
 Write-Host '    PawnIO OK'
 
 # 2. Files
 Step "Copying files to $Dir"
-Get-Process CpuTempNative -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Milliseconds 300
+Stop-CpuTemp
 New-Item -ItemType Directory -Force $Dir | Out-Null
 Copy-Item (Join-Path $Src 'CpuTempNative.exe') $Exe -Force
-Copy-Item (Join-Path $Src 'uninstall.ps1') $Dir -Force
+Copy-Item (Join-Path $Src 'uninstall.ps1'), (Join-Path $Src 'common.ps1') $Dir -Force
 if (Test-Path (Join-Path $Src 'IntelMSR.LICENSE.txt')) { Copy-Item (Join-Path $Src 'IntelMSR.LICENSE.txt') $Dir -Force }
 
-# 3. Logon task
+# 3. Logon task - for the user signed in at the console, which differs from the
+#    elevated account when a standard user approves UAC with an admin's password
 Step 'Registering startup task'
-$user      = "$env:USERDOMAIN\$env:USERNAME"
+$user = (Get-CimInstance Win32_ComputerSystem).UserName
+if (-not $user) { $user = "$env:USERDOMAIN\$env:USERNAME" }
+Write-Host "    For user $user"
 $action    = New-ScheduledTaskAction -Execute $Exe
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
