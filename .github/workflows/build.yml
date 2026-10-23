@@ -36,7 +36,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read version
         id: version
@@ -95,7 +95,7 @@ jobs:
       - name: Upload exe for signing
         if: env.SIGN == 'true'
         id: upload-exe
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-exe
           path: CpuTempNative.exe
@@ -126,7 +126,7 @@ jobs:
       - name: Upload setup for signing
         if: env.SIGN == 'true'
         id: upload-setup
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-setup
           path: dist/CpuTemp_Setup_${{ steps.version.outputs.version }}.exe
@@ -159,7 +159,7 @@ jobs:
             "| $(Split-Path $f -Leaf) | ``$h`` |" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: CpuTemp-${{ steps.version.outputs.version }}
           path: |
@@ -175,7 +175,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: CpuTemp-${{ needs.build.outputs.version }}
 
