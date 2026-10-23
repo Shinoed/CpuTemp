@@ -23,6 +23,7 @@
 #define ID_TIMER     1
 #define ID_EXIT      100
 #define ID_USAGE     101
+#define ID_FAN       102
 #define REG_KEY      L"Software\\CpuTemp"
 #define ID_INTERVAL  200   // 200 + 秒數
 #define RES_MODULE   1
@@ -42,12 +43,14 @@ static const wchar_t *err_msg = L"";
 static KAFFINITY core_mask[MAX_CORES];
 static int      ncores;
 
-static NOTIFYICONDATAW nid, nid_use;  // 溫度圖示 / CPU 使用率圖示
+static NOTIFYICONDATAW nid, nid_use, nid_fan;  // 溫度 / CPU 使用率 / 風扇轉速圖示
 static UINT     wm_taskbar_created;
 static int      icon_size, interval_sec = 2, last_shown = -9999, light_theme;
 static int      show_usage = 1, last_usage = -9999;
+static int      show_fan = 1, last_fan = -9999, fan_now = -1; // fan_now = 最快風扇的 RPM
+static wchar_t  fan_line[40];                                 // "風扇 2345 RPM"，沒有風扇時為空
 static ULONGLONG prev_idle, prev_total;
-static HICON    cur_icon, cur_icon_use;
+static HICON    cur_icon, cur_icon_use, cur_icon_fan;
 static HFONT    font2, font3;          // 兩位數 / 三位數用
 static HDC      mem_dc;
 static HBITMAP  dib, big_dib;
@@ -358,6 +361,36 @@ static void add_usage_icon(void)
     update_usage(1);
 }
 
+// 綠色，和溫度的白/黑、使用率的藍區分；轉速沒有警戒值，讀不到時灰色
+static COLORREF fan_color(int rpm)
+{
+    if (rpm < 0) return RGB(140, 140, 140);
+    return light_theme ? RGB(0, 125, 90) : RGB(90, 225, 170);
+}
+
+static void update_fan(int force)
+{
+    if (!wmi || !show_fan || (fan_now == last_fan && !force)) return;
+    last_fan = fan_now;
+
+    wchar_t txt[8];
+    fan_icon_text(txt, fan_now);
+    HICON old = cur_icon_fan;
+    cur_icon_fan = make_icon(txt, fan_color(fan_now), -1);
+    nid_fan.hIcon = cur_icon_fan;
+    wcscpy(nid_fan.szTip, fan_line[0] ? fan_line : L"風扇轉速讀取失敗");
+    nid_fan.uFlags = NIF_ICON | NIF_TIP;
+    Shell_NotifyIconW(NIM_MODIFY, &nid_fan);
+    if (old) DestroyIcon(old);
+}
+
+static void add_fan_icon(void)
+{
+    nid_fan.uFlags = NIF_TIP | NIF_MESSAGE;
+    Shell_NotifyIconW(NIM_ADD, &nid_fan);
+    update_fan(1);
+}
+
 static void update(int force)
 {
     update_usage(force);
@@ -370,6 +403,9 @@ static void update(int force)
     int rpm[MAX_FANS], nfans = wmi ? read_fans(rpm) : 0;
     int fan_len = nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
     if (fan_len) fan[0] = L'\n', fan_len++;
+    fan_now = fan_max(rpm, nfans);
+    wcscpy(fan_line, fan_len ? fan + 1 : L"");
+    update_fan(force);
 
     // 提示文字每次都更新 (核心溫度會變)，圖示只有封裝溫度變了才重畫；風扇那行留在最後
     int n;
@@ -411,6 +447,7 @@ static void show_menu(HWND hwnd)
     }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (show_usage ? MF_CHECKED : 0), ID_USAGE, L"顯示 CPU 使用率");
+    if (wmi) AppendMenuW(m, MF_STRING | (show_fan ? MF_CHECKED : 0), ID_FAN, L"顯示風扇轉速");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, ID_EXIT, L"結束");
     POINT p;
@@ -441,6 +478,13 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             else Shell_NotifyIconW(NIM_DELETE, &nid_use);
             return 0;
         }
+        if (LOWORD(wp) == ID_FAN && wmi) {
+            show_fan = !show_fan;
+            reg_set(L"ShowFan", show_fan);
+            if (show_fan) add_fan_icon();
+            else Shell_NotifyIconW(NIM_DELETE, &nid_fan);
+            return 0;
+        }
         if (LOWORD(wp) > ID_INTERVAL && LOWORD(wp) <= ID_INTERVAL + 10) {
             interval_sec = LOWORD(wp) - ID_INTERVAL;
             reg_set(L"Interval", interval_sec);
@@ -450,6 +494,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DESTROY:
         Shell_NotifyIconW(NIM_DELETE, &nid);
         Shell_NotifyIconW(NIM_DELETE, &nid_use);
+        Shell_NotifyIconW(NIM_DELETE, &nid_fan);
         if (pio) p_close(pio);
         if (wmi) IWbemServices_Release(wmi);
         PostQuitMessage(0);
@@ -459,6 +504,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
         Shell_NotifyIconW(NIM_ADD, &nid);
         if (show_usage) add_usage_icon();
+        if (wmi && show_fan) add_fan_icon();
         update(1);
         return 0;
     }
@@ -498,6 +544,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     if (interval_sec != 1 && interval_sec != 5 && interval_sec != 10) interval_sec = 2; // 只接受選單上的值
     read_usage();           // 第一次取樣只當基準點
     if (show_usage) add_usage_icon();
+
+    nid_fan = nid;
+    nid_fan.uID = 2;
+    show_fan = reg_get(L"ShowFan", 1);
+    if (wmi && show_fan) add_fan_icon(); // 沒裝 Dell Command | Monitor 就不加，第一次 update 會補上讀值
 
     update(1);
     SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);

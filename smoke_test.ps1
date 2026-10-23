@@ -119,6 +119,10 @@ Check 'only one instance runs' (@(Get-Process CpuTempNative -ErrorAction Silentl
 Check 'tooltip is set' (WaitFor { [Native]::Tooltip() -like 'CPU*' }) "(got '$([Native]::Tooltip())')"
 Check 'no fan line without Dell Command | Monitor' ([Native]::Tooltip() -notmatch '風扇') "(got '$([Native]::Tooltip())')"
 
+Command 102 | Out-Null         # "顯示風扇轉速": not in the menu without fans, must be ignored
+Start-Sleep 1
+Check 'fan toggle ignored without fans' ($null -eq (RegValue ShowFan)) "(got $(RegValue ShowFan))"
+
 Command 100 | Out-Null         # "結束"
 Check 'exits from the menu' (WaitFor { -not (Running) })
 
@@ -153,6 +157,12 @@ Get-CimInstance -Namespace root\dcim\sysman -ClassName DCIM_NumericSensor -Filte
     Set-CimInstance -Property @{ CurrentReading = 3100 }
 Command (200 + 1) | Out-Null
 Check 'fan speed updates' (WaitFor { [Native]::Tooltip() -match '3100' }) "(got '$([Native]::Tooltip())')"
+
+Command 102 | Out-Null
+Check 'fan icon off is saved' (WaitFor { (RegValue ShowFan) -eq 0 }) "(got $(RegValue ShowFan))"
+Command 102 | Out-Null
+Check 'fan icon on is saved' (WaitFor { (RegValue ShowFan) -eq 1 }) "(got $(RegValue ShowFan))"
+Check 'fan line stays in the tooltip' ([Native]::Tooltip() -match '3100')
 
 Command 100 | Out-Null
 Check 'exits with fan reading on' (WaitFor { -not (Running) })

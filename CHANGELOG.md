@@ -9,7 +9,7 @@
 - exe 版本資訊
 - 程式與安裝檔圖示；「設定 > 應用程式」的發行者改為 Shinoed
 - GitHub Actions 自動建置、SignPath 簽章、版本 tag 建立 draft Release
-- 有安裝 Dell Command | Monitor 時，在提示文字顯示風扇轉速
+- 有安裝 Dell Command | Monitor 時，以第三個工作列圖示 (千 RPM) 和提示文字顯示風扇轉速，可從右鍵選單關閉
 - CPU 使用率與風扇轉速的單元測試，以及 CI 的安裝後自動測試
 - `SECURITY.md` 說明如何回報安全性問題
 

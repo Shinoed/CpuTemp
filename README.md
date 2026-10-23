@@ -14,7 +14,7 @@ A tiny native Windows tray tool that shows the Intel CPU package temperature (an
 - 滑鼠停在圖示上顯示每個核心的溫度與 TjMax
 - 第二個圖示顯示 CPU 使用率 (藍色數字 + 負載條，70 % 以上變黃、90 % 以上變紅)，可從右鍵選單關閉 *(尚未發布，見下方「數位簽章」)*
 - 依螢幕 DPI 自動縮放、跟隨淺色 / 深色工作列換色
-- 有安裝 Dell Command | Monitor 的 Dell 電腦，提示文字會加上風扇轉速；沒裝就不顯示
+- 有安裝 Dell Command | Monitor 的 Dell 電腦，多一個綠色圖示顯示風扇轉速 (千 RPM，例如 2.7 = 2700 RPM)，可從右鍵選單關閉；溫度提示文字也會列出確切轉速。沒裝就不顯示
 - 更新頻率可選 1 / 2 / 5 / 10 秒，和是否顯示 CPU 使用率一樣會記住
 - 安裝程式自動檢查需求、在背景安裝 PawnIO 驅動、設定登入時自動啟動；同一個安裝檔也能解除安裝
 
