@@ -30,6 +30,17 @@ public static class Native {
     [DllImport("user32", CharSet = CharSet.Unicode)]
     public static extern IntPtr FindWindow(string cls, string title);
     [DllImport("user32")] public static extern bool PostMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
+    [DllImport("user32", CharSet = CharSet.Unicode)]
+    static extern int GetWindowText(IntPtr w, System.Text.StringBuilder s, int n);
+
+    // The app mirrors its temperature tooltip into its hidden window's title
+    public static string Tooltip() {
+        IntPtr w = FindWindow("CpuTempTray", null);
+        if (w == IntPtr.Zero) return null;
+        var s = new System.Text.StringBuilder(256);
+        GetWindowText(w, s, s.Capacity);
+        return s.ToString();
+    }
 
     // Number of RT_GROUP_ICON resources in a PE file
     public static int IconGroups(string path) {
@@ -102,8 +113,46 @@ Start-Process $Exe             # second instance must exit at once (single-insta
 Start-Sleep 2
 Check 'only one instance runs' (@(Get-Process CpuTempNative -ErrorAction SilentlyContinue).Count -eq 1)
 
+Check 'tooltip is set' (WaitFor { [Native]::Tooltip() -like 'CPU*' }) "(got '$([Native]::Tooltip())')"
+Check 'no fan line without Dell Command | Monitor' ([Native]::Tooltip() -notmatch '風扇') "(got '$([Native]::Tooltip())')"
+
 Command 100 | Out-Null         # "結束"
 Check 'exits from the menu' (WaitFor { -not (Running) })
+
+# --- Fan speed: fake the DCIM_NumericSensor class Dell Command | Monitor provides
+$mof = Join-Path $env:TEMP 'fake_dcim.mof'
+@'
+#pragma namespace("\\\\.\\root")
+instance of __Namespace { Name = "dcim"; };
+#pragma namespace("\\\\.\\root\\dcim")
+instance of __Namespace { Name = "sysman"; };
+#pragma namespace("\\\\.\\root\\dcim\\sysman")
+class DCIM_NumericSensor {
+    [key] string DeviceID;
+    string ElementName;
+    uint16 SensorType;
+    sint32 CurrentReading;
+    sint32 UnitModifier;
+};
+instance of DCIM_NumericSensor { DeviceID = "Fan1"; ElementName = "Processor Fan"; SensorType = 5; CurrentReading = 2345; UnitModifier = 0; };
+instance of DCIM_NumericSensor { DeviceID = "Fan2"; ElementName = "Video Fan"; SensorType = 5; CurrentReading = 180; UnitModifier = 1; };
+instance of DCIM_NumericSensor { DeviceID = "Temp1"; ElementName = "CPU Temp"; SensorType = 2; CurrentReading = 45; UnitModifier = 0; };
+'@ | Set-Content $mof -Encoding ascii
+mofcomp.exe $mof | Out-Null
+Check 'fake DCIM class compiled' ($LASTEXITCODE -eq 0)
+
+Start-Process $Exe
+Check 'fan speeds in tooltip' (WaitFor { [Native]::Tooltip() -match '風扇 (2345 / 1800|1800 / 2345) RPM' }) "(got '$([Native]::Tooltip())')"
+Check 'temperature sensor is not shown as a fan' ([Native]::Tooltip() -notmatch '45 RPM| / 45')
+
+Set-ItemProperty $Reg Interval 1 -Type DWord
+Get-CimInstance -Namespace root\dcim\sysman -ClassName DCIM_NumericSensor -Filter "DeviceID='Fan1'" |
+    Set-CimInstance -Property @{ CurrentReading = 3100 }
+Command (200 + 1) | Out-Null
+Check 'fan speed updates' (WaitFor { [Native]::Tooltip() -match '3100' }) "(got '$([Native]::Tooltip())')"
+
+Command 100 | Out-Null
+Check 'exits with fan reading on' (WaitFor { -not (Running) })
 
 # --- Uninstall
 & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$App\uninstall.ps1" -Quiet

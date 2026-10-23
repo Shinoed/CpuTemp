@@ -4,6 +4,7 @@
 //   IA32_PACKAGE_THERM_STATUS (0x1B1) bits 22:16 = 封裝距 TjMax 的度數
 //   IA32_THERM_STATUS (0x19C)         bits 22:16 = 各核心距 TjMax 的度數 (需切到該核心讀)
 // 另有第二個圖示顯示 CPU 使用率 (GetSystemTimes)，可從右鍵選單關閉
+// 有裝 Dell Command | Monitor 時，提示文字加上風扇轉速 (WMI root\dcim\sysman)
 #define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
 #define UNICODE
@@ -12,7 +13,11 @@
 #include <shellapi.h>
 #include <imm.h>
 #include <wchar.h>
+#define COBJMACROS
+#include <objbase.h>
+#include <wbemidl.h>
 #include "usage.h"
+#include "fan.h"
 
 #define WM_TRAY      (WM_APP + 1)
 #define ID_TIMER     1
@@ -138,6 +143,61 @@ static int read_usage(void)
     prev_total = t;
     last_tick = now;
     return last = first ? -1 : usage_percent(di, dt);
+}
+
+// 風扇轉速：Dell Command | Monitor 提供的 DCIM_NumericSensor (SensorType 5 = 風扇)
+// 啟動時查不到就整個關掉、釋放 COM，沒裝的人不會多佔記憶體
+static IWbemServices *wmi;
+
+static int read_fans(int *rpm)
+{
+    IEnumWbemClassObject *e = NULL;
+    BSTR lang = SysAllocString(L"WQL");
+    BSTR q = SysAllocString(L"SELECT CurrentReading, UnitModifier FROM DCIM_NumericSensor WHERE SensorType = 5");
+    HRESULT hr = IWbemServices_ExecQuery(wmi, lang, q, WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &e);
+    SysFreeString(lang);
+    SysFreeString(q);
+    if (FAILED(hr)) return -1;
+
+    int n = 0;
+    IWbemClassObject *o;
+    ULONG got;
+    while (n < MAX_FANS && IEnumWbemClassObject_Next(e, 2000, 1, &o, &got) == WBEM_S_NO_ERROR && got) {
+        VARIANT r, m;
+        VariantInit(&r);
+        VariantInit(&m);
+        long reading = -1, mod = 0;
+        if (SUCCEEDED(IWbemClassObject_Get(o, L"CurrentReading", 0, &r, NULL, NULL)) &&
+            SUCCEEDED(VariantChangeType(&r, &r, 0, VT_I4))) reading = r.lVal;
+        if (SUCCEEDED(IWbemClassObject_Get(o, L"UnitModifier", 0, &m, NULL, NULL)) &&
+            SUCCEEDED(VariantChangeType(&m, &m, 0, VT_I4))) mod = m.lVal;
+        VariantClear(&r);
+        VariantClear(&m);
+        IWbemClassObject_Release(o);
+        rpm[n++] = fan_rpm(reading, mod);
+    }
+    IEnumWbemClassObject_Release(e);
+    return n;
+}
+
+static void init_fans(void)
+{
+    if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) return;
+    CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
+
+    IWbemLocator *loc = NULL;
+    if (SUCCEEDED(CoCreateInstance(&CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER, &IID_IWbemLocator, (void **)&loc))) {
+        BSTR ns = SysAllocString(L"ROOT\\DCIM\\SYSMAN");
+        if (FAILED(IWbemLocator_ConnectServer(loc, ns, NULL, NULL, NULL, 0, NULL, NULL, &wmi))) wmi = NULL;
+        SysFreeString(ns);
+        IWbemLocator_Release(loc);
+    }
+    int rpm[MAX_FANS];
+    if (wmi && read_fans(rpm) > 0) return;
+
+    if (wmi) IWbemServices_Release(wmi);
+    wmi = NULL;
+    CoUninitialize();
 }
 
 static int reg_get(const wchar_t *name, int def)
@@ -306,13 +366,22 @@ static void update(int force)
     int cores[MAX_CORES];
     if (pio && ncores) read_cores(cores);
 
-    // 提示文字每次都更新 (核心溫度會變)，圖示只有封裝溫度變了才重畫
-    if (t < 0) _snwprintf(nid.szTip, 128, L"CPU 溫度讀取失敗\n%ls", err_msg);
+    wchar_t fan[40] = L"";
+    int rpm[MAX_FANS], nfans = wmi ? read_fans(rpm) : 0;
+    int fan_len = nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
+    if (fan_len) fan[0] = L'\n', fan_len++;
+
+    // 提示文字每次都更新 (核心溫度會變)，圖示只有封裝溫度變了才重畫；風扇那行留在最後
+    int n;
+    if (t < 0) n = _snwprintf(nid.szTip, 128, L"CPU 溫度讀取失敗\n%ls", err_msg);
     else {
-        int n = _snwprintf(nid.szTip, 128, L"CPU 封裝 %d °C  (TjMax %d)", t, tjmax);
-        for (int i = 0; i < ncores && n > 0 && n < 110; i++)
+        n = _snwprintf(nid.szTip, 128, L"CPU 封裝 %d °C  (TjMax %d)", t, tjmax);
+        for (int i = 0; i < ncores && n > 0 && n < 110 - fan_len; i++)
             n += _snwprintf(nid.szTip + n, 128 - n, L"%ls核心%d: %d°C", i % 2 ? L"   " : L"\n", i, cores[i]);
     }
+    if (n > 0 && n + fan_len < 128) wcscpy(nid.szTip + n, fan);
+    nid.szTip[127] = 0;
+    SetWindowTextW(nid.hWnd, nid.szTip); // 隱藏視窗的標題 = 提示文字，讓自動測試讀得到
     nid.uFlags = NIF_TIP;
 
     if (t != last_shown || force) {
@@ -382,6 +451,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         Shell_NotifyIconW(NIM_DELETE, &nid);
         Shell_NotifyIconW(NIM_DELETE, &nid_use);
         if (pio) p_close(pio);
+        if (wmi) IWbemServices_Release(wmi);
         PostQuitMessage(0);
         return 0;
     }
@@ -411,6 +481,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     ChangeWindowMessageFilterEx(hwnd, wm_taskbar_created, MSGFLT_ALLOW, NULL); // 以管理員執行時仍收得到
 
     if (!init_sensor() && pio) { p_close(pio); pio = NULL; }
+    init_fans();
     read_theme();
     init_icon_canvas();
 

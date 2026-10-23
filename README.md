@@ -14,6 +14,7 @@ A tiny native Windows tray tool that shows the Intel CPU package temperature (an
 - 滑鼠停在圖示上顯示每個核心的溫度與 TjMax
 - 第二個圖示顯示 CPU 使用率 (藍色數字 + 負載條，70 % 以上變黃、90 % 以上變紅)，可從右鍵選單關閉 *(尚未發布，見下方「數位簽章」)*
 - 依螢幕 DPI 自動縮放、跟隨淺色 / 深色工作列換色
+- 有安裝 Dell Command | Monitor 的 Dell 電腦，提示文字會加上風扇轉速；沒裝就不顯示
 - 更新頻率可選 1 / 2 / 5 / 10 秒，和是否顯示 CPU 使用率一樣會記住
 - 安裝程式自動檢查需求、在背景安裝 PawnIO 驅動、設定登入時自動啟動；同一個安裝檔也能解除安裝
 
@@ -88,6 +89,8 @@ SignPath 專案的兩個 artifact configuration (GitHub artifact 是 zip，內�
 |---|---|
 | `cputemp.c` | 工作列程式 |
 | `usage.h`, `test_usage.c` | CPU 使用率計算與其單元測試 (CI 會執行) |
+| `fan.h`, `test_fan.c` | 風扇轉速換算、提示文字格式與其單元測試 (CI 會執行) |
+| `smoke_test.ps1` | CI 的安裝後測試：靜默安裝、操作執行中的程式 (含模擬的 Dell 風扇感應器)、解除安裝 |
 | `cputemp.rc`, `app.manifest` | 資源：manifest、版本資訊、內嵌的 IntelMSR 模組 |
 | `cputemp.ico`, `make_ico.ps1` | 程式與安裝檔圖示，及產生它的腳本 (`.\make_ico.ps1 -Out cputemp.ico`) |
 | `IntelMSR.bin` | PawnIO 的 IntelMSR 模組 ([PawnIO.Modules](https://github.com/namazso/PawnIO.Modules)) |

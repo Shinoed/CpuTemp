@@ -84,6 +84,10 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           .\test_usage.exe
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          gcc -std=c11 -Wall -Werror -o test_fan.exe test_fan.c
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\test_fan.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Build CpuTempNative.exe
         run: |
