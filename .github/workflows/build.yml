@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned toolchain; hashes match the local builds so CI output is reproducible.
+  W64DEVKIT_URL: https://github.com/skeeto/w64devkit/releases/download/v2.10.1/w64devkit-x64-2.10.1.7z.exe
+  W64DEVKIT_SHA256: ADD1EDF984CE4D473CFEB7C52E0AB38DB73A855BBA6C7F564D5E16648EB2896A
+  INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe
+  INNO_SHA256: 0362A383ED217D4C4239B5933866DD96D3EB2102737DA92F80F6057A4B40DF2F
+  PAWNIO_URL: https://github.com/namazso/PawnIO.Setup/releases/download/2.2.0/PawnIO_setup.exe
+  PAWNIO_SHA256: 1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and verify tools
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $dl = Join-Path $env:RUNNER_TEMP dl
+          New-Item -ItemType Directory -Force $dl | Out-Null
+          function Get-Verified($url, $sha, $out) {
+            Invoke-WebRequest $url -OutFile $out
+            $h = (Get-FileHash $out -Algorithm SHA256).Hash
+            if ($h -ne $sha) { throw "SHA256 mismatch for $url`n  expected $sha`n  got      $h" }
+          }
+          Get-Verified $env:W64DEVKIT_URL $env:W64DEVKIT_SHA256 "$dl\w64devkit.7z.exe"
+          Get-Verified $env:INNO_URL      $env:INNO_SHA256      "$dl\innosetup.exe"
+          Get-Verified $env:PAWNIO_URL    $env:PAWNIO_SHA256    "PawnIO_setup.exe"
+
+          # w64devkit is a self-extracting 7z archive
+          & "$dl\w64devkit.7z.exe" -y "-o$env:RUNNER_TEMP" | Out-Null
+          if (-not (Test-Path "$env:RUNNER_TEMP\w64devkit\bin\gcc.exe")) { throw 'w64devkit extraction failed' }
+
+          $inno = Join-Path $env:RUNNER_TEMP inno
+          Start-Process "$dl\innosetup.exe" -Wait -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=$inno"
+          if (-not (Test-Path "$inno\ISCC.exe")) { throw 'Inno Setup install failed' }
+
+          "$env:RUNNER_TEMP\w64devkit\bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          $inno | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build CpuTempNative.exe
+        run: |
+          gcc --version | Select-Object -First 1
+          cmd /c build_c.bat
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-FileHash CpuTempNative.exe | Format-List Algorithm, Hash
+
+      - name: Build setup
+        run: |
+          cmd /c build_setup.bat
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem dist\*.exe | Get-FileHash | Format-List Path, Hash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CpuTemp-${{ github.sha }}
+          path: |
+            CpuTempNative.exe
+            dist/*.exe
+          if-no-files-found: error

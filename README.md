@@ -46,6 +46,8 @@ build_c.bat        :: 產生 CpuTempNative.exe
 build_setup.bat    :: 產生 dist\CpuTemp_Setup_<version>.exe
 ```
 
+GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)) 會在每次 push 時用固定版本的 w64devkit 2.10.1、Inno Setup 7.1.0、PawnIO 2.2.0 (皆驗證 SHA-256) 自動建置，產物可在 Actions 頁面的 Artifacts 下載。
+
 ## 檔案
 
 | 檔案 | 說明 |
