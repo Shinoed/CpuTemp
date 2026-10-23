@@ -2,7 +2,7 @@
 ; Build: build_setup.bat  ->  dist\CpuTemp_Setup_<version>.exe
 
 #define AppName    "CpuTemp"
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 #define AppExe     "CpuTempNative.exe"
 
 [Setup]
@@ -60,15 +60,15 @@ zh_tw.ReqSubtitle=安裝程式已檢查這台電腦需要的元件。
 en.ReqSubtitle=Setup has checked the components this computer needs.
 zh_tw.ReqIntro=缺少的元件會在安裝時自動安裝。按「下一步」繼續。
 en.ReqIntro=Missing components will be installed automatically. Click Next to continue.
-zh_tw.ReqOS=[✓] 作業系統：%1 (64 位元)
+zh_tw.ReqOS=[正常] 作業系統：%1 (64 位元)
 en.ReqOS=[OK] Operating system: %1 (64-bit)
-zh_tw.ReqCPU=[✓] 處理器：%1 (Intel)
+zh_tw.ReqCPU=[正常] 處理器：%1 (Intel)
 en.ReqCPU=[OK] Processor: %1 (Intel)
-zh_tw.ReqPawnOK=[✓] PawnIO 驅動程式：已安裝 (版本 %1)
+zh_tw.ReqPawnOK=[正常] PawnIO 驅動程式：已安裝 (版本 %1)
 en.ReqPawnOK=[OK] PawnIO driver: installed (version %1)
-zh_tw.ReqPawnMissing=[!] PawnIO 驅動程式：未安裝 → 安裝時會自動安裝內附的 2.2.0 版
-en.ReqPawnMissing=[!] PawnIO driver: not installed -> the bundled 2.2.0 will be installed
-zh_tw.ReqRuntime=[✓] 執行環境：只使用 Windows 內建元件，不需要 .NET 或 Visual C++ 執行階段
+zh_tw.ReqPawnMissing=[需安裝] PawnIO 驅動程式：未安裝或安裝不完整，安裝時會自動安裝內附的 2.2.0 版
+en.ReqPawnMissing=[INSTALL] PawnIO driver: missing or incomplete, the bundled 2.2.0 will be installed
+zh_tw.ReqRuntime=[正常] 執行環境：只使用 Windows 內建元件，不需要 .NET 或 Visual C++ 執行階段
 en.ReqRuntime=[OK] Runtime: uses only built-in Windows components, no .NET or Visual C++ runtime needed
 zh_tw.ReadyPawnIO=安裝 PawnIO 驅動程式 2.2.0 (會開啟 PawnIO 安裝視窗)
 en.ReadyPawnIO=Install PawnIO driver 2.2.0 (opens the PawnIO setup window)
@@ -106,8 +106,11 @@ function PawnIOInstalled: Boolean;
 begin
   { Both the driver service and the DLL CpuTemp loads must be present; right after a
     PawnIO uninstall the service key can linger until reboot while the files are gone }
+  { Also require PawnIO's own Settings > Apps entry: a failed PawnIO uninstall can leave
+    the driver and files without it, and only a reinstall repairs that state }
   Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\PawnIO') and
-            FileExists(ExpandConstant('{commonpf64}\PawnIO\PawnIOLib.dll'));
+            FileExists(ExpandConstant('{commonpf64}\PawnIO\PawnIOLib.dll')) and
+            RegKeyExists(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO');
 end;
 
 function PowerShell: String;
@@ -145,8 +148,8 @@ begin
             FmtMessage(CustomMessage('ReqCPU'), [Trim(Cpu)]) + #13#10;
   if PawnIOInstalled then
   begin
-    if not RegQueryStringValue(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO',
-         'DisplayVersion', Ver) then Ver := '?';
+    if not GetVersionNumbersString(ExpandConstant('{commonpf64}\PawnIO\PawnIOLib.dll'), Ver) then
+      Ver := '?';
     Result := Result + FmtMessage(CustomMessage('ReqPawnOK'), [Ver]);
   end else
     Result := Result + CustomMessage('ReqPawnMissing');
