@@ -2,7 +2,7 @@
 ; Build: build_setup.bat  ->  dist\CpuTemp_Setup_<version>.exe
 
 #define AppName    "CpuTemp"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 #define AppExe     "CpuTempNative.exe"
 
 [Setup]
@@ -195,9 +195,11 @@ begin
 
   if CurUninstallStep = usPostUninstall then
   begin
+    { uninstall.exe is the same binary as PawnIO's setup: without -uninstall it tries to
+      install into its own (locked) folder and fails with 0xC0000043 }
     PawnUninstaller := ExpandConstant('{commonpf64}\PawnIO\uninstall.exe');
     if FileExists(PawnUninstaller) and not UninstallSilent and
        (MsgBox(CustomMessage('RemovePawnIO'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
-      Exec(PawnUninstaller, '', '', SW_SHOW, ewWaitUntilTerminated, RC);
+      Exec(PawnUninstaller, '-uninstall', '', SW_SHOW, ewWaitUntilTerminated, RC);
   end;
 end;
