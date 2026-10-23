@@ -3,6 +3,7 @@
 //   IA32_TEMPERATURE_TARGET (0x1A2) bits 23:16 = TjMax
 //   IA32_PACKAGE_THERM_STATUS (0x1B1) bits 22:16 = 封裝距 TjMax 的度數
 //   IA32_THERM_STATUS (0x19C)         bits 22:16 = 各核心距 TjMax 的度數 (需切到該核心讀)
+// 另有第二個圖示顯示 CPU 使用率 (GetSystemTimes)，可從右鍵選單關閉
 #define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
 #define UNICODE
@@ -15,6 +16,8 @@
 #define WM_TRAY      (WM_APP + 1)
 #define ID_TIMER     1
 #define ID_EXIT      100
+#define ID_USAGE     101
+#define REG_KEY      L"Software\\CpuTemp"
 #define ID_INTERVAL  200   // 200 + 秒數
 #define RES_MODULE   1
 #define MAX_CORES    64
@@ -33,10 +36,12 @@ static const wchar_t *err_msg = L"";
 static KAFFINITY core_mask[MAX_CORES];
 static int      ncores;
 
-static NOTIFYICONDATAW nid;
+static NOTIFYICONDATAW nid, nid_use;  // 溫度圖示 / CPU 使用率圖示
 static UINT     wm_taskbar_created;
 static int      icon_size, interval_sec = 2, last_shown = -9999, light_theme;
-static HICON    cur_icon;
+static int      show_usage = 1, last_usage = -9999;
+static ULONGLONG prev_idle, prev_total;
+static HICON    cur_icon, cur_icon_use;
 static HFONT    font2, font3;          // 兩位數 / 三位數用
 static HDC      mem_dc;
 static HBITMAP  dib, big_dib;
@@ -112,6 +117,34 @@ static void read_cores(int *out)
     if (orig) SetThreadAffinityMask(th, orig);
 }
 
+static ULONGLONG ft64(FILETIME f) { return ((ULONGLONG)f.dwHighDateTime << 32) | f.dwLowDateTime; }
+
+// 兩次取樣之間的 CPU 使用率 (%)；kernel 時間已包含 idle
+static int read_usage(void)
+{
+    FILETIME idle, kernel, user;
+    if (!GetSystemTimes(&idle, &kernel, &user)) return -1;
+    ULONGLONG i = ft64(idle), t = ft64(kernel) + ft64(user);
+    ULONGLONG di = i - prev_idle, dt = t - prev_total;
+    int first = prev_total == 0;
+    prev_idle = i;
+    prev_total = t;
+    if (first || dt == 0) return -1;
+    return (int)((dt - di) * 100 / dt);
+}
+
+static int reg_get(const wchar_t *name, int def)
+{
+    DWORD v, sz = sizeof v;
+    return RegGetValueW(HKEY_CURRENT_USER, REG_KEY, name, RRF_RT_REG_DWORD, NULL, &v, &sz) == ERROR_SUCCESS ? (int)v : def;
+}
+
+static void reg_set(const wchar_t *name, int v)
+{
+    DWORD d = (DWORD)v;
+    RegSetKeyValueW(HKEY_CURRENT_USER, REG_KEY, name, REG_DWORD, &d, sizeof d);
+}
+
 static void read_theme(void)
 {
     DWORD v = 0, sz = sizeof v;
@@ -183,14 +216,24 @@ static void init_icon_canvas(void)
 }
 
 // 量出字形實際範圍後置中貼到圖示，亮度轉成 alpha，得到反鋸齒的透明圖示
-static HICON make_icon(const wchar_t *text, COLORREF color)
+// bar >= 0：在底部畫一條 0–100% 的負載條 (使用率圖示用，也用來和溫度圖示區分)
+static HICON make_icon(const wchar_t *text, COLORREF color, int bar)
 {
     RECT bb;
+    int bar_h = bar >= 0 ? (icon_size >= 24 ? 3 : 2) : 0;
+    DWORD r = GetRValue(color), g = GetGValue(color), b = GetBValue(color);
     for (int i = 0; i < icon_size * icon_size; i++) pixels[i] = 0;
+    if (bar_h) {
+        int fill = icon_size * bar / 100;
+        for (int y = icon_size - bar_h; y < icon_size; y++)
+            for (int x = 0; x < icon_size; x++) {
+                DWORD a = x < fill ? 255 : 70; // 未填滿的部分畫成淡色軌道
+                pixels[y * icon_size + x] = (a << 24) | ((r * a / 255) << 16) | ((g * a / 255) << 8) | (b * a / 255);
+            }
+    }
     if (render_text(text, wcslen(text) > 2 ? font3 : font2, &bb)) {
         int w = bb.right - bb.left + 1, h = bb.bottom - bb.top + 1;
-        int ox = (icon_size - w + 1) / 2 - bb.left, oy = (icon_size - h + 1) / 2 - bb.top;
-        DWORD r = GetRValue(color), g = GetGValue(color), b = GetBValue(color);
+        int ox = (icon_size - w + 1) / 2 - bb.left, oy = (icon_size - bar_h - h + 1) / 2 - bb.top;
         for (int y = bb.top; y <= bb.bottom; y++)
             for (int x = bb.left; x <= bb.right; x++) {
                 int dx = x + ox, dy = y + oy;
@@ -214,8 +257,44 @@ static COLORREF temp_color(int t)
     return light_theme ? RGB(20, 20, 20) : RGB(255, 255, 255);
 }
 
+static COLORREF usage_color(int u)
+{
+    if (u < 0)   return RGB(140, 140, 140);
+    if (u >= 90) return light_theme ? RGB(200, 30, 30) : RGB(255, 90, 90);
+    if (u >= 70) return light_theme ? RGB(190, 110, 0) : RGB(255, 200, 60);
+    return light_theme ? RGB(0, 95, 184) : RGB(110, 200, 255); // 藍色，和溫度的白/黑色區分
+}
+
+static void update_usage(int force)
+{
+    int u = read_usage(); // 每次都要取樣，才能算出這段期間的使用率
+    if (!show_usage || (u == last_usage && !force)) return;
+    last_usage = u;
+
+    wchar_t txt[8];
+    if (u < 0) wcscpy(txt, L"--");
+    else _snwprintf(txt, 8, L"%d", u);
+    HICON old = cur_icon_use;
+    cur_icon_use = make_icon(txt, usage_color(u), u < 0 ? 0 : u);
+    nid_use.hIcon = cur_icon_use;
+    if (u < 0) wcscpy(nid_use.szTip, L"CPU 使用率");
+    else _snwprintf(nid_use.szTip, 128, L"CPU 使用率 %d%%", u);
+    nid_use.uFlags = NIF_ICON | NIF_TIP;
+    Shell_NotifyIconW(NIM_MODIFY, &nid_use);
+    if (old) DestroyIcon(old);
+}
+
+static void add_usage_icon(void)
+{
+    nid_use.uFlags = NIF_TIP | NIF_MESSAGE;
+    Shell_NotifyIconW(NIM_ADD, &nid_use);
+    update_usage(1);
+}
+
 static void update(int force)
 {
+    update_usage(force);
+
     int t = read_temp();
     int cores[MAX_CORES];
     if (pio && ncores) read_cores(cores);
@@ -235,7 +314,7 @@ static void update(int force)
         if (t < 0) wcscpy(txt, L"--");
         else _snwprintf(txt, 8, L"%d", t);
         HICON old = cur_icon;
-        cur_icon = make_icon(txt, temp_color(t));
+        cur_icon = make_icon(txt, temp_color(t), -1);
         nid.hIcon = cur_icon;
         nid.uFlags |= NIF_ICON;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -254,6 +333,8 @@ static void show_menu(HWND hwnd)
         _snwprintf(s, 32, L"每 %d 秒更新", secs[i]);
         AppendMenuW(m, MF_STRING | (secs[i] == interval_sec ? MF_CHECKED : 0), ID_INTERVAL + secs[i], s);
     }
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING | (show_usage ? MF_CHECKED : 0), ID_USAGE, L"顯示 CPU 使用率");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, ID_EXIT, L"結束");
     POINT p;
@@ -277,6 +358,13 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_COMMAND:
         if (LOWORD(wp) == ID_EXIT) { DestroyWindow(hwnd); return 0; }
+        if (LOWORD(wp) == ID_USAGE) {
+            show_usage = !show_usage;
+            reg_set(L"ShowUsage", show_usage);
+            if (show_usage) add_usage_icon();
+            else Shell_NotifyIconW(NIM_DELETE, &nid_use);
+            return 0;
+        }
         if (LOWORD(wp) > ID_INTERVAL && LOWORD(wp) <= ID_INTERVAL + 10) {
             interval_sec = LOWORD(wp) - ID_INTERVAL;
             SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
@@ -284,6 +372,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_DESTROY:
         Shell_NotifyIconW(NIM_DELETE, &nid);
+        Shell_NotifyIconW(NIM_DELETE, &nid_use);
         if (pio) p_close(pio);
         PostQuitMessage(0);
         return 0;
@@ -291,6 +380,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == wm_taskbar_created) { // 檔案總管重啟後重新加回圖示
         nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
         Shell_NotifyIconW(NIM_ADD, &nid);
+        if (show_usage) add_usage_icon();
         update(1);
         return 0;
     }
@@ -321,6 +411,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     nid.uFlags = NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = WM_TRAY;
     Shell_NotifyIconW(NIM_ADD, &nid);
+
+    nid_use = nid;          // 同一個視窗、同一個回呼訊息，用 uID 區分
+    nid_use.uID = 1;
+    show_usage = reg_get(L"ShowUsage", 1);
+    read_usage();           // 第一次取樣只當基準點
+    if (show_usage) add_usage_icon();
+
     update(1);
     SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); // 釋放啟動時的暫用記憶體

@@ -1,3 +1,29 @@
 #include <winuser.h>
+#include <winver.h>
 1 RT_MANIFEST "app.manifest"
 1 RCDATA "IntelMSR.bin"
+
+1 VERSIONINFO
+FILEVERSION     1,1,0,0
+PRODUCTVERSION  1,1,0,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040404B0"
+    BEGIN
+      VALUE "CompanyName",      "CpuTemp"
+      VALUE "FileDescription",  "CpuTemp - CPU temperature and usage tray icon"
+      VALUE "FileVersion",      "1.1.0"
+      VALUE "InternalName",     "CpuTempNative"
+      VALUE "OriginalFilename", "CpuTempNative.exe"
+      VALUE "ProductName",      "CpuTemp"
+      VALUE "ProductVersion",   "1.1.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0404, 1200
+  END
+END
