@@ -54,6 +54,27 @@ en.ActionReinstall=Reinstall / update
 zh_tw.ActionUninstall=解除安裝
 en.ActionUninstall=Uninstall
 
+zh_tw.ReqTitle=系統需求檢查
+en.ReqTitle=System requirements
+zh_tw.ReqSubtitle=安裝程式已檢查這台電腦需要的元件。
+en.ReqSubtitle=Setup has checked the components this computer needs.
+zh_tw.ReqIntro=缺少的元件會在安裝時自動安裝。按「下一步」繼續。
+en.ReqIntro=Missing components will be installed automatically. Click Next to continue.
+zh_tw.ReqOS=[✓] 作業系統：%1 (64 位元)
+en.ReqOS=[OK] Operating system: %1 (64-bit)
+zh_tw.ReqCPU=[✓] 處理器：%1 (Intel)
+en.ReqCPU=[OK] Processor: %1 (Intel)
+zh_tw.ReqPawnOK=[✓] PawnIO 驅動程式：已安裝 (版本 %1)
+en.ReqPawnOK=[OK] PawnIO driver: installed (version %1)
+zh_tw.ReqPawnMissing=[!] PawnIO 驅動程式：未安裝 → 安裝時會自動安裝內附的 2.2.0 版
+en.ReqPawnMissing=[!] PawnIO driver: not installed -> the bundled 2.2.0 will be installed
+zh_tw.ReqRuntime=[✓] 執行環境：只使用 Windows 內建元件，不需要 .NET 或 Visual C++ 執行階段
+en.ReqRuntime=[OK] Runtime: uses only built-in Windows components, no .NET or Visual C++ runtime needed
+zh_tw.ReadyPawnIO=安裝 PawnIO 驅動程式 2.2.0 (會開啟 PawnIO 安裝視窗)
+en.ReadyPawnIO=Install PawnIO driver 2.2.0 (opens the PawnIO setup window)
+zh_tw.ReadyTask=設定登入 Windows 時自動啟動
+en.ReadyTask=Start automatically when you sign in to Windows
+
 [Files]
 Source: "{#AppExe}";             DestDir: "{app}"; Flags: ignoreversion
 Source: "task.ps1";              DestDir: "{app}"; Flags: ignoreversion
@@ -112,6 +133,40 @@ begin
   end;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, RC);
   if RC = 0 then Sleep(1000); { killed: give Windows time to release the exe }
+end;
+
+function BuildRequirementsReport: String;
+var
+  Cpu, Ver: String;
+begin
+  if not RegQueryStringValue(HKLM, 'HARDWARE\DESCRIPTION\System\CentralProcessor\0',
+       'ProcessorNameString', Cpu) then Cpu := 'Intel';
+  Result := FmtMessage(CustomMessage('ReqOS'), [GetWindowsVersionString]) + #13#10 +
+            FmtMessage(CustomMessage('ReqCPU'), [Trim(Cpu)]) + #13#10;
+  if PawnIOInstalled then
+  begin
+    if not RegQueryStringValue(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO',
+         'DisplayVersion', Ver) then Ver := '?';
+    Result := Result + FmtMessage(CustomMessage('ReqPawnOK'), [Ver]);
+  end else
+    Result := Result + CustomMessage('ReqPawnMissing');
+  Result := Result + #13#10 + CustomMessage('ReqRuntime');
+end;
+
+procedure InitializeWizard;
+begin
+  CreateOutputMsgMemoPage(wpWelcome, CustomMessage('ReqTitle'), CustomMessage('ReqSubtitle'),
+    CustomMessage('ReqIntro'), BuildRequirementsReport);
+end;
+
+{ "Ready to install" page: also list the extra actions setup will perform }
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := MemoDirInfo + NewLine + NewLine;
+  if not PawnIOInstalled then
+    Result := Result + Space + CustomMessage('ReadyPawnIO') + NewLine;
+  Result := Result + Space + CustomMessage('ReadyTask');
 end;
 
 function GetUninstaller: String;
