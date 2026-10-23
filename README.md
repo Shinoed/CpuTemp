@@ -89,6 +89,7 @@ SignPath 專案的兩個 artifact configuration (GitHub artifact 是 zip，內�
 | `cputemp.c` | 工作列程式 |
 | `usage.h`, `test_usage.c` | CPU 使用率計算與其單元測試 (CI 會執行) |
 | `cputemp.rc`, `app.manifest` | 資源：manifest、版本資訊、內嵌的 IntelMSR 模組 |
+| `cputemp.ico`, `make_ico.ps1` | 程式與安裝檔圖示，及產生它的腳本 (`.\make_ico.ps1 -Out cputemp.ico`) |
 | `IntelMSR.bin` | PawnIO 的 IntelMSR 模組 ([PawnIO.Modules](https://github.com/namazso/PawnIO.Modules)) |
 | `CpuTemp.iss` | Inno Setup 安裝程式腳本 |
 | `task.ps1` | 安裝時建立開機自動啟動的排程工作 |

@@ -4,14 +4,17 @@
 #define AppName    "CpuTemp"
 #define AppVersion "1.1.0"
 #define AppExe     "CpuTempNative.exe"
+#define Publisher  "Shinoed"
 
 [Setup]
 AppId={#AppName}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-AppPublisher={#AppName}
+AppPublisher={#Publisher}
+AppPublisherURL=https://github.com/Shinoed/CpuTemp
 VersionInfoVersion={#AppVersion}
+SetupIconFile=cputemp.ico
 DefaultDirName={autopf}\{#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
@@ -96,7 +99,7 @@ Root: HKLM; Subkey: "{#ArpKey}_is1"; Flags: deletekey
 Root: HKLM; Subkey: "{#ArpKey}"; Flags: deletekey
 Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "DisplayName";          ValueData: "{#AppName} (CPU 溫度工作列工具)"
 Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "DisplayVersion";       ValueData: "{#AppVersion}"
-Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "Publisher";            ValueData: "{#AppName}"
+Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "Publisher";            ValueData: "{#Publisher}"
 Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "DisplayIcon";          ValueData: "{app}\{#AppExe}"
 Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "InstallLocation";      ValueData: "{app}"
 Root: HKLM; Subkey: "{#ArpKey}"; ValueType: string; ValueName: "UninstallString";      ValueData: "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\uninstall.ps1"""

@@ -2,6 +2,7 @@
 #include <winver.h>
 1 RT_MANIFEST "app.manifest"
 1 RCDATA "IntelMSR.bin"
+1 ICON "cputemp.ico"
 
 1 VERSIONINFO
 FILEVERSION     1,1,0,0
@@ -13,7 +14,7 @@ BEGIN
   BEGIN
     BLOCK "040404B0"
     BEGIN
-      VALUE "CompanyName",      "CpuTemp"
+      VALUE "CompanyName",      "Shinoed"
       VALUE "FileDescription",  "CpuTemp - CPU temperature and usage tray icon"
       VALUE "FileVersion",      "1.1.0"
       VALUE "InternalName",     "CpuTempNative"
