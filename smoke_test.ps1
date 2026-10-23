@@ -70,6 +70,15 @@ function WaitFor([scriptblock]$cond, $sec = 10) {
 }
 
 function Running { [bool](Get-Process CpuTempNative -ErrorAction SilentlyContinue) }
+# Memory of the running app: private working set is what Task Manager's Memory column shows
+function Memory($label) {
+    $p = Get-Process CpuTempNative
+    $pws = (Get-Counter '\Process(CpuTempNative)\Working Set - Private').CounterSamples[0].CookedValue
+    $m = [pscustomobject]@{ WS = $p.WorkingSet64 / 1MB; PrivateWS = $pws / 1MB; Commit = $p.PrivateMemorySize64 / 1MB }
+    Write-Host ("MEM   {0,-28} WS {1,6:N2} MB  private WS {2,6:N2} MB  commit {3,6:N2} MB" -f $label, $m.WS, $m.PrivateWS, $m.Commit)
+    $m
+}
+
 function RegValue($name) { (Get-ItemProperty $Reg -Name $name -ErrorAction SilentlyContinue).$name }
 
 # --- Built files
@@ -117,6 +126,8 @@ Start-Sleep 2
 Check 'only one instance runs' (@(Get-Process CpuTempNative -ErrorAction SilentlyContinue).Count -eq 1)
 
 Check 'tooltip is set' (WaitFor { [Native]::Tooltip() -like 'CPU*' }) "(got '$([Native]::Tooltip())')"
+$m0 = Memory 'no fans'
+Check 'private working set under 3 MB without fans' ($m0.PrivateWS -lt 3) "($([math]::Round($m0.PrivateWS, 2)) MB)"
 Check 'no fan line without Dell Command | Monitor' ([Native]::Tooltip() -notmatch '風扇') "(got '$([Native]::Tooltip())')"
 
 Command 102 | Out-Null         # "顯示風扇轉速": not in the menu without fans, must be ignored
@@ -157,6 +168,13 @@ Get-CimInstance -Namespace root\dcim\sysman -ClassName DCIM_NumericSensor -Filte
     Set-CimInstance -Property @{ CurrentReading = 3100 }
 Command (200 + 1) | Out-Null
 Check 'fan speed updates' (WaitFor { [Native]::Tooltip() -match '3100' }) "(got '$([Native]::Tooltip())')"
+
+# 1 s interval: 40 WMI queries; committed memory must not keep growing
+$m1 = Memory 'fans, after 5 s'
+Start-Sleep 40
+$m2 = Memory 'fans, after 45 s'
+Check 'no memory growth over 40 fan queries' ($m2.Commit - $m1.Commit -lt 0.5) "(commit +$([math]::Round($m2.Commit - $m1.Commit, 2)) MB)"
+Check 'private working set under 3 MB with fans' ($m2.PrivateWS -lt 3) "($([math]::Round($m2.PrivateWS, 2)) MB)"
 
 Command 102 | Out-Null
 Check 'fan icon off is saved' (WaitFor { (RegValue ShowFan) -eq 0 }) "(got $(RegValue ShowFan))"
