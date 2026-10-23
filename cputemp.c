@@ -26,6 +26,14 @@
 #define ID_FAN       102
 #define REG_KEY      L"Software\\CpuTemp"
 #define ID_INTERVAL  200   // 200 + 秒數
+static const int intervals[] = { 1, 2, 5, 10 }; // 選單上的更新頻率 (秒)；只接受這幾個值
+
+static int valid_interval(int s)
+{
+    for (int i = 0; i < (int)(sizeof intervals / sizeof *intervals); i++)
+        if (intervals[i] == s) return 1;
+    return 0;
+}
 #define RES_MODULE   1
 #define MAX_CORES    64
 
@@ -47,8 +55,8 @@ static NOTIFYICONDATAW nid, nid_use, nid_fan;  // 溫度 / CPU 使用率 / 風�
 static UINT     wm_taskbar_created;
 static int      icon_size, interval_sec = 2, last_shown = -9999, light_theme;
 static int      show_usage = 1, last_usage = -9999;
-static int      show_fan = 1, last_fan = -9999, fan_now = -1; // fan_now = 最快風扇的 RPM
-static wchar_t  fan_line[40];                                 // "風扇 2345 RPM"，沒有風扇時為空
+static int      show_fan = 1, fan_icon_on;
+static wchar_t  fan_txt[8], fan_tip[64];   // 風扇圖示目前顯示的文字和提示，沒變就不重畫
 static ULONGLONG prev_idle, prev_total;
 static HICON    cur_icon, cur_icon_use, cur_icon_fan;
 static HFONT    font2, font3, font_dec; // 兩位數 / 三位數 / 一位小數 (風扇 "2.7") 用
@@ -149,15 +157,40 @@ static int read_usage(void)
 }
 
 // 風扇轉速：Dell Command | Monitor 提供的 DCIM_NumericSensor (SensorType 5 = 風扇)
-// 啟動時查不到就整個關掉、釋放 COM，沒裝的人不會多佔記憶體
-static IWbemServices *wmi;
+// WMI 查詢跨行程、可能很慢，放在背景執行緒做，UI 執行緒只讀最新結果 (不會卡住選單，也不會在
+// STA 的 COM 呼叫中被重入)。啟動時或斷線後每 15 秒重試一次，最多 3 分鐘：登入時 WMI 可能還沒好，
+// WMI 服務重啟後也能自動接回；一直找不到就結束執行緒，沒裝的人不會多佔資源
+#define WM_FANS        (WM_APP + 2)   // 背景執行緒通知 UI：風扇狀態變了
+#define FAN_RETRY_MS   15000
+#define FAN_SEARCH_MS  (3 * 60 * 1000)
 
-static int read_fans(int *rpm)
+static CRITICAL_SECTION fan_lock;
+static int      fan_state = -1;        // -1 = 沒有風扇感應器、0 = 曾經有但暫時讀不到、>0 = 風扇數
+static int      fan_rpms[MAX_FANS];    // fan_state > 0 時有效；以上兩個都受 fan_lock 保護
+static HANDLE   fan_thread, fan_stop;
+static volatile LONG fan_period_ms = 2000;
+static HWND     main_hwnd;
+
+static IWbemServices *wmi_connect(void)
+{
+    IWbemLocator *loc = NULL;
+    IWbemServices *svc = NULL;
+    if (FAILED(CoCreateInstance(&CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER, &IID_IWbemLocator, (void **)&loc)))
+        return NULL;
+    BSTR ns = SysAllocString(L"ROOT\\DCIM\\SYSMAN");
+    if (FAILED(IWbemLocator_ConnectServer(loc, ns, NULL, NULL, NULL, 0, NULL, NULL, &svc))) svc = NULL;
+    SysFreeString(ns);
+    IWbemLocator_Release(loc);
+    return svc;
+}
+
+// 回傳風扇數 (0 = 沒有風扇)，查詢失敗 (連線斷了、類別不存在) 回傳 -1
+static int read_fans(IWbemServices *svc, int *rpm)
 {
     IEnumWbemClassObject *e = NULL;
     BSTR lang = SysAllocString(L"WQL");
     BSTR q = SysAllocString(L"SELECT CurrentReading, UnitModifier FROM DCIM_NumericSensor WHERE SensorType = 5");
-    HRESULT hr = IWbemServices_ExecQuery(wmi, lang, q, WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &e);
+    HRESULT hr = IWbemServices_ExecQuery(svc, lang, q, WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &e);
     SysFreeString(lang);
     SysFreeString(q);
     if (FAILED(hr)) return -1;
@@ -165,7 +198,7 @@ static int read_fans(int *rpm)
     int n = 0;
     IWbemClassObject *o;
     ULONG got;
-    while (n < MAX_FANS && IEnumWbemClassObject_Next(e, 2000, 1, &o, &got) == WBEM_S_NO_ERROR && got) {
+    while (n < MAX_FANS && (hr = IEnumWbemClassObject_Next(e, 2000, 1, &o, &got)) == WBEM_S_NO_ERROR && got) {
         VARIANT r, m;
         VariantInit(&r);
         VariantInit(&m);
@@ -180,27 +213,81 @@ static int read_fans(int *rpm)
         rpm[n++] = fan_rpm(reading, mod);
     }
     IEnumWbemClassObject_Release(e);
-    return n;
+    return FAILED(hr) ? -1 : n;
 }
 
-static void init_fans(void)
+static void publish_fans(int state, const int *rpm)
 {
-    if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) return;
+    EnterCriticalSection(&fan_lock);
+    int changed = state != fan_state;
+    for (int i = 0; i < state; i++) {
+        changed |= fan_rpms[i] != rpm[i];
+        fan_rpms[i] = rpm[i];
+    }
+    fan_state = state;
+    LeaveCriticalSection(&fan_lock);
+    if (changed) PostMessageW(main_hwnd, WM_FANS, 0, 0);
+}
+
+static DWORD WINAPI fan_worker(void *arg)
+{
+    if (FAILED(CoInitializeEx(NULL, COINIT_MULTITHREADED))) return 0;
     CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
 
-    IWbemLocator *loc = NULL;
-    if (SUCCEEDED(CoCreateInstance(&CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER, &IID_IWbemLocator, (void **)&loc))) {
-        BSTR ns = SysAllocString(L"ROOT\\DCIM\\SYSMAN");
-        if (FAILED(IWbemLocator_ConnectServer(loc, ns, NULL, NULL, NULL, 0, NULL, NULL, &wmi))) wmi = NULL;
-        SysFreeString(ns);
-        IWbemLocator_Release(loc);
+    IWbemServices *svc = NULL;
+    int had_fans = 0;
+    ULONGLONG give_up = GetTickCount64() + FAN_SEARCH_MS;
+    DWORD wait = 0;
+    while (WaitForSingleObject(fan_stop, wait) == WAIT_TIMEOUT) {
+        int rpm[MAX_FANS], n = -1;
+        if (!svc) svc = wmi_connect();
+        if (svc && (n = read_fans(svc, rpm)) < 0) { // 連線斷了 (例如 WMI 服務重啟)：丟掉，下一輪重連
+            IWbemServices_Release(svc);
+            svc = NULL;
+        }
+        if (n > 0) {
+            had_fans = 1;
+            give_up = GetTickCount64() + FAN_SEARCH_MS;
+            publish_fans(n, rpm);
+            wait = (DWORD)fan_period_ms;
+            continue;
+        }
+        if (GetTickCount64() >= give_up) break;
+        if (had_fans) publish_fans(0, rpm); // 曾經有風扇：圖示留著顯示 "--"，繼續重試
+        wait = FAN_RETRY_MS;
     }
-    int rpm[MAX_FANS];
-    if (wmi && read_fans(rpm) > 0) return;
-
-    if (wmi) IWbemServices_Release(wmi);
-    wmi = NULL;
+    if (svc) IWbemServices_Release(svc);
     CoUninitialize();
+    publish_fans(-1, NULL);
+    return 0;
+}
+
+static void start_fans(HWND hwnd)
+{
+    main_hwnd = hwnd;
+    InitializeCriticalSection(&fan_lock);
+    fan_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    // 只做 WMI 查詢，不需要預設的 1 MB 堆疊
+    fan_thread = CreateThread(NULL, 256 * 1024, fan_worker, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+}
+
+static void stop_fans(void)
+{
+    if (!fan_thread) return;
+    SetEvent(fan_stop);
+    WaitForSingleObject(fan_thread, 5000); // 查詢中最多等 Next 的 2 秒逾時
+    CloseHandle(fan_thread);
+    fan_thread = NULL;
+}
+
+// 複製最新的風扇狀態 (UI 執行緒用)
+static int get_fans(int *rpm)
+{
+    EnterCriticalSection(&fan_lock);
+    int state = fan_state;
+    for (int i = 0; i < state; i++) rpm[i] = fan_rpms[i];
+    LeaveCriticalSection(&fan_lock);
+    return state;
 }
 
 static int reg_get(const wchar_t *name, int def)
@@ -372,44 +459,51 @@ static COLORREF fan_color(int rpm)
     return light_theme ? RGB(0, 125, 90) : RGB(90, 225, 170);
 }
 
+// 依最新的風扇狀態加入、移除或更新風扇圖示；顯示的文字和提示都沒變就不重畫
 static void update_fan(int force)
 {
-    if (!wmi || !show_fan || (fan_now == last_fan && !force)) return;
-    last_fan = fan_now;
+    int rpm[MAX_FANS], state = get_fans(rpm);
+    if (!show_fan || state < 0) {
+        if (fan_icon_on) Shell_NotifyIconW(NIM_DELETE, &nid_fan);
+        fan_icon_on = 0;
+        return;
+    }
+    if (!fan_icon_on) {
+        nid_fan.uFlags = NIF_TIP | NIF_MESSAGE;
+        Shell_NotifyIconW(NIM_ADD, &nid_fan);
+        fan_icon_on = force = 1;
+    }
 
-    wchar_t txt[8];
-    fan_icon_text(txt, fan_now);
+    int top = fan_max(rpm, state);
+    wchar_t txt[8], tip[64];
+    fan_icon_text(txt, top);
+    if (state == 0 || !fan_format(tip, 64, rpm, state)) wcscpy(tip, L"風扇轉速讀取失敗");
+    if (!force && !wcscmp(txt, fan_txt) && !wcscmp(tip, fan_tip)) return;
+    wcscpy(fan_txt, txt);
+    wcscpy(fan_tip, tip);
+
     HICON old = cur_icon_fan;
-    cur_icon_fan = make_icon(txt, fan_color(fan_now), -1);
+    cur_icon_fan = make_icon(txt, fan_color(top), -1);
     nid_fan.hIcon = cur_icon_fan;
-    wcscpy(nid_fan.szTip, fan_line[0] ? fan_line : L"風扇轉速讀取失敗");
+    wcscpy(nid_fan.szTip, tip);
     nid_fan.uFlags = NIF_ICON | NIF_TIP;
     Shell_NotifyIconW(NIM_MODIFY, &nid_fan);
     if (old) DestroyIcon(old);
 }
 
-static void add_fan_icon(void)
-{
-    nid_fan.uFlags = NIF_TIP | NIF_MESSAGE;
-    Shell_NotifyIconW(NIM_ADD, &nid_fan);
-    update_fan(1);
-}
-
 static void update(int force)
 {
     update_usage(force);
+    update_fan(force);
 
     int t = read_temp();
     int cores[MAX_CORES];
     if (pio && ncores) read_cores(cores);
 
     wchar_t fan[40] = L"";
-    int rpm[MAX_FANS], nfans = wmi ? read_fans(rpm) : 0;
+    int rpm[MAX_FANS], nfans = get_fans(rpm);
     int fan_len = nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
     if (fan_len) fan[0] = L'\n', fan_len++;
-    fan_now = fan_max(rpm, nfans);
-    wcscpy(fan_line, fan_len ? fan + 1 : L"");
-    update_fan(force);
 
     // 提示文字每次都更新 (核心溫度會變)，圖示只有封裝溫度變了才重畫；風扇那行留在最後
     int n;
@@ -443,15 +537,15 @@ static void update(int force)
 static void show_menu(HWND hwnd)
 {
     HMENU m = CreatePopupMenu();
-    static const int secs[] = { 1, 2, 5, 10 };
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < (int)(sizeof intervals / sizeof *intervals); i++) {
         wchar_t s[32];
-        _snwprintf(s, 32, L"每 %d 秒更新", secs[i]);
-        AppendMenuW(m, MF_STRING | (secs[i] == interval_sec ? MF_CHECKED : 0), ID_INTERVAL + secs[i], s);
+        _snwprintf(s, 32, L"每 %d 秒更新", intervals[i]);
+        AppendMenuW(m, MF_STRING | (intervals[i] == interval_sec ? MF_CHECKED : 0), ID_INTERVAL + intervals[i], s);
     }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (show_usage ? MF_CHECKED : 0), ID_USAGE, L"顯示 CPU 使用率");
-    if (wmi) AppendMenuW(m, MF_STRING | (show_fan ? MF_CHECKED : 0), ID_FAN, L"顯示風扇轉速");
+    int rpm[MAX_FANS];
+    if (get_fans(rpm) >= 0) AppendMenuW(m, MF_STRING | (show_fan ? MF_CHECKED : 0), ID_FAN, L"顯示風扇轉速");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, ID_EXIT, L"結束");
     POINT p;
@@ -466,6 +560,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_TIMER:
         update(0);
+        return 0;
+    case WM_FANS:
+        update_fan(0);
         return 0;
     case WM_TRAY:
         if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) show_menu(hwnd);
@@ -482,25 +579,27 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             else Shell_NotifyIconW(NIM_DELETE, &nid_use);
             return 0;
         }
-        if (LOWORD(wp) == ID_FAN && wmi) {
+        if (LOWORD(wp) == ID_FAN) {
+            int rpm[MAX_FANS];
+            if (get_fans(rpm) < 0) return 0; // 沒有風扇時選單不會有這項
             show_fan = !show_fan;
             reg_set(L"ShowFan", show_fan);
-            if (show_fan) add_fan_icon();
-            else Shell_NotifyIconW(NIM_DELETE, &nid_fan);
+            update_fan(1);
             return 0;
         }
-        if (LOWORD(wp) > ID_INTERVAL && LOWORD(wp) <= ID_INTERVAL + 10) {
+        if (LOWORD(wp) > ID_INTERVAL && valid_interval(LOWORD(wp) - ID_INTERVAL)) {
             interval_sec = LOWORD(wp) - ID_INTERVAL;
+            fan_period_ms = interval_sec * 1000;
             reg_set(L"Interval", interval_sec);
             SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
         }
         return 0;
     case WM_DESTROY:
+        stop_fans();
         Shell_NotifyIconW(NIM_DELETE, &nid);
         Shell_NotifyIconW(NIM_DELETE, &nid_use);
-        Shell_NotifyIconW(NIM_DELETE, &nid_fan);
+        if (fan_icon_on) Shell_NotifyIconW(NIM_DELETE, &nid_fan);
         if (pio) p_close(pio);
-        if (wmi) IWbemServices_Release(wmi);
         PostQuitMessage(0);
         return 0;
     }
@@ -508,7 +607,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
         Shell_NotifyIconW(NIM_ADD, &nid);
         if (show_usage) add_usage_icon();
-        if (wmi && show_fan) add_fan_icon();
+        fan_icon_on = 0;    // update 會重新加回
         update(1);
         return 0;
     }
@@ -531,7 +630,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     ChangeWindowMessageFilterEx(hwnd, wm_taskbar_created, MSGFLT_ALLOW, NULL); // 以管理員執行時仍收得到
 
     if (!init_sensor() && pio) { p_close(pio); pio = NULL; }
-    init_fans();
     read_theme();
     init_icon_canvas(GetSystemMetrics(SM_CXSMICON));
 
@@ -545,14 +643,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     nid_use.uID = 1;
     show_usage = reg_get(L"ShowUsage", 1);
     interval_sec = reg_get(L"Interval", 2);
-    if (interval_sec != 1 && interval_sec != 5 && interval_sec != 10) interval_sec = 2; // 只接受選單上的值
+    if (!valid_interval(interval_sec)) interval_sec = 2;
     read_usage();           // 第一次取樣只當基準點
     if (show_usage) add_usage_icon();
 
-    nid_fan = nid;
+    nid_fan = nid;          // 找到風扇時才由 update_fan 加入
     nid_fan.uID = 2;
     show_fan = reg_get(L"ShowFan", 1);
-    if (wmi && show_fan) add_fan_icon(); // 沒裝 Dell Command | Monitor 就不加，第一次 update 會補上讀值
+    fan_period_ms = interval_sec * 1000;
+    start_fans(hwnd);
 
     update(1);
     SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);

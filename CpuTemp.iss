@@ -111,6 +111,25 @@ Root: HKLM; Subkey: "{#ArpKey}"; ValueType: dword;  ValueName: "EstimatedSize"; 
 [Code]
 const
   WM_CLOSE = $0010;
+  { Setup exit codes when the install finished but CpuTemp cannot work (Inno uses 1-8) }
+  EXIT_PAWNIO = 10;
+  EXIT_TASK   = 11;
+
+var
+  SetupFailCode: Integer;
+
+{ Lets a silent install (winget, CI) see that the PawnIO or task step failed }
+function GetCustomSetupExitCode: Integer;
+begin
+  Result := SetupFailCode;
+end;
+
+{ /SimulateFailure=pawnio|task: test-only, makes that step fail so the CI smoke test
+  can check the exit code }
+function Simulated(Step: String): Boolean;
+begin
+  Result := CompareText(ExpandConstant('{param:SimulateFailure|}'), Step) = 0;
+end;
 
 function IsIntel: Boolean;
 var
@@ -249,15 +268,18 @@ begin
       { No window in a silent install: nobody is there to click through it }
       if not PawnIOInstalled and not WizardSilent then
         Exec(ExpandConstant('{tmp}\PawnIO_setup.exe'), '', '', SW_SHOW, ewWaitUntilTerminated, RC);
-      if not PawnIOInstalled then
-      begin
-        SuppressibleMsgBox(CustomMessage('PawnIOMissing'), mbError, MB_OK, IDOK);
-        Exit;
-      end;
+    end;
+    if not PawnIOInstalled or Simulated('pawnio') then
+    begin
+      SuppressibleMsgBox(CustomMessage('PawnIOMissing'), mbError, MB_OK, IDOK);
+      SetupFailCode := EXIT_PAWNIO;
+      Exit;
     end;
 
-    Exec(PowerShell, '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\task.ps1') +
+    if Simulated('task') then RC := 1
+    else Exec(PowerShell, '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\task.ps1') +
       '" -Exe "' + ExpandConstant('{app}\{#AppExe}') + '"', '', SW_HIDE, ewWaitUntilTerminated, RC);
+    if RC <> 0 then SetupFailCode := EXIT_TASK;
     if RC = 2 then
       SuppressibleMsgBox(CustomMessage('PawnIONotRunning'), mbError, MB_OK, IDOK)
     else if RC <> 0 then

@@ -32,6 +32,16 @@ public static class Native {
     [DllImport("user32")] public static extern bool PostMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
     [DllImport("user32", CharSet = CharSet.Unicode)]
     static extern int GetWindowText(IntPtr w, System.Text.StringBuilder s, int n);
+    [DllImport("user32")]
+    static extern IntPtr SendMessageTimeout(IntPtr w, uint msg, IntPtr wp, IntPtr lp, uint flags, uint ms, out IntPtr result);
+
+    // Milliseconds the app's UI thread takes to answer WM_NULL; -1 if it does not answer within 2 s
+    public static int Ping() {
+        IntPtr r, w = Window();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        if (SendMessageTimeout(w, 0, IntPtr.Zero, IntPtr.Zero, 0x2, 2000, out r) == IntPtr.Zero) return -1; // SMTO_ABORTIFHUNG
+        return (int)sw.ElapsedMilliseconds;
+    }
 
     // Called from C#: PowerShell would pass $null as "" and match only an empty title
     public static IntPtr Window() { return FindWindow("CpuTempTray", null); }
@@ -116,6 +126,9 @@ Check 'still running after 3 s' (Running)
 
 Command (200 + 5) | Out-Null   # "每 5 秒更新"
 Check 'interval 5 s is saved' (WaitFor { (RegValue Interval) -eq 5 }) "(got $(RegValue Interval))"
+Command (200 + 3) | Out-Null   # not in the menu: must be ignored
+Start-Sleep 1
+Check 'interval not in the menu is ignored' ((RegValue Interval) -eq 5) "(got $(RegValue Interval))"
 Command 101 | Out-Null         # "顯示 CPU 使用率" off
 Check 'usage icon off is saved' (WaitFor { (RegValue ShowUsage) -eq 0 }) "(got $(RegValue ShowUsage))"
 Command 101 | Out-Null
@@ -134,10 +147,9 @@ Command 102 | Out-Null         # "顯示風扇轉速": not in the menu without f
 Start-Sleep 1
 Check 'fan toggle ignored without fans' ($null -eq (RegValue ShowFan)) "(got $(RegValue ShowFan))"
 
-Command 100 | Out-Null         # "結束"
-Check 'exits from the menu' (WaitFor { -not (Running) })
-
-# --- Fan speed: fake the DCIM_NumericSensor class Dell Command | Monitor provides
+# --- Fan speed: fake the DCIM_NumericSensor class Dell Command | Monitor provides.
+# Added while the app is already running, like Dell's WMI provider coming up after the
+# logon task starts the app: it must find the fans on a later retry without a restart
 $mof = Join-Path $env:TEMP 'fake_dcim.mof'
 @'
 #pragma namespace("\\\\.\\root")
@@ -159,15 +171,22 @@ instance of DCIM_NumericSensor { DeviceID = "Temp1"; ElementName = "CPU Temp"; S
 mofcomp.exe $mof | Out-Null
 Check 'fake DCIM class compiled' ($LASTEXITCODE -eq 0)
 
-Start-Process $Exe
-Check 'fan speeds in tooltip' (WaitFor { [Native]::Tooltip() -match '風扇 (2345 / 1800|1800 / 2345) RPM' }) "(got '$([Native]::Tooltip())')"
+Check 'fans found after the app started' (WaitFor { [Native]::Tooltip() -match '風扇 (2345 / 1800|1800 / 2345) RPM' } 45) "(got '$([Native]::Tooltip())')"
 Check 'temperature sensor is not shown as a fan' ([Native]::Tooltip() -match '風扇 \d+ / \d+ RPM$') "(got '$([Native]::Tooltip())')"
 
-Set-ItemProperty $Reg Interval 1 -Type DWord
-Get-CimInstance -Namespace root\dcim\sysman -ClassName DCIM_NumericSensor -Filter "DeviceID='Fan1'" |
-    Set-CimInstance -Property @{ CurrentReading = 3100 }
+function SetFan1($rpm) {
+    Get-CimInstance -Namespace root\dcim\sysman -ClassName DCIM_NumericSensor -Filter "DeviceID='Fan1'" |
+        Set-CimInstance -Property @{ CurrentReading = $rpm }
+}
+SetFan1 3100
 Command (200 + 1) | Out-Null
+Check 'interval 1 s is saved' (WaitFor { (RegValue Interval) -eq 1 }) "(got $(RegValue Interval))"
 Check 'fan speed updates' (WaitFor { [Native]::Tooltip() -match '3100' }) "(got '$([Native]::Tooltip())')"
+
+# WMI queries run off the UI thread: the window answers at once while fans are polled every second
+$pings = 1..20 | ForEach-Object { [Native]::Ping(); Start-Sleep -Milliseconds 250 }
+$slowest = ($pings | Measure-Object -Maximum).Maximum
+Check 'UI thread responsive while polling fans' (($pings -notcontains -1) -and $slowest -lt 300) "(slowest $slowest ms; $($pings -join ','))"
 
 # 1 s interval: 40 WMI queries; committed memory must not keep growing
 $m1 = Memory 'fans, after 5 s'
@@ -182,8 +201,21 @@ Command 102 | Out-Null
 Check 'fan icon on is saved' (WaitFor { (RegValue ShowFan) -eq 1 }) "(got $(RegValue ShowFan))"
 Check 'fan line stays in the tooltip' ([Native]::Tooltip() -match '3100')
 
-Command 100 | Out-Null
-Check 'exits with fan reading on' (WaitFor { -not (Running) })
+# The WMI service restarting drops the app's connection: it must reconnect by itself
+Restart-Service winmgmt -Force
+SetFan1 3300
+Check 'fan reading resumes after WMI restarts' (WaitFor { [Native]::Tooltip() -match '3300' } 60) "(got '$([Native]::Tooltip())')"
+Check 'still running after WMI restarts' (Running)
+
+Command 100 | Out-Null         # "結束"
+Check 'exits from the menu' (WaitFor { -not (Running) })
+
+# --- Silent setup must report a failed step through its exit code
+foreach ($step in @{ Name = 'pawnio'; Code = 10 }, @{ Name = 'task'; Code = 11 }) {
+    $p = Start-Process $Setup '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SkipCpuCheck=1', "/SimulateFailure=$($step.Name)" -Wait -PassThru
+    Check "setup exits with $($step.Code) when the $($step.Name) step fails" ($p.ExitCode -eq $step.Code) "(got $($p.ExitCode))"
+}
+Stop-Process -Name CpuTempNative -Force -ErrorAction SilentlyContinue
 
 # --- Uninstall
 & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$App\uninstall.ps1" -Quiet
