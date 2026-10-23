@@ -22,11 +22,36 @@ env:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: read   # SignPath reads job details and downloads the artifacts
+    env:
+      # Signing runs only for version tags, and only once the SignPath repository
+      # variables (and the SIGNPATH_API_TOKEN secret) have been configured.
+      SIGN: ${{ startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      signed: ${{ steps.version.outputs.signed }}
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          $m = Select-String -Path CpuTemp.iss -Pattern '#define AppVersion "([^"]+)"'
+          if (-not $m) { throw 'AppVersion not found in CpuTemp.iss' }
+          $v = $m.Matches[0].Groups[1].Value
+          $rc = Select-String -Path cputemp.rc -Pattern 'VALUE "ProductVersion",\s*"([^"]+)"'
+          if (-not $rc -or $rc.Matches[0].Groups[1].Value -ne $v) {
+            throw "ProductVersion in cputemp.rc does not match AppVersion $v in CpuTemp.iss"
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "Tag $env:GITHUB_REF_NAME does not match AppVersion $v in CpuTemp.iss"
+          }
+          "version=$v", "signed=$env:SIGN" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Download and verify tools
         run: |
@@ -58,18 +83,117 @@ jobs:
           gcc --version | Select-Object -First 1
           cmd /c build_c.bat
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Get-FileHash CpuTempNative.exe | Format-List Algorithm, Hash
+
+      # The exe is signed before it is packed, so the setup installs a signed exe.
+      - name: Upload exe for signing
+        if: env.SIGN == 'true'
+        id: upload-exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: CpuTempNative.exe
+          if-no-files-found: error
+
+      - name: Sign exe
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'CpuTemp' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_EXE_CONFIG || 'exe' }}
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-exe
+
+      - name: Use signed exe
+        if: env.SIGN == 'true'
+        run: Copy-Item signed-exe\CpuTempNative.exe CpuTempNative.exe -Force
 
       - name: Build setup
         run: |
           cmd /c build_setup.bat
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Get-ChildItem dist\*.exe | Get-FileHash | Format-List Path, Hash
+
+      - name: Upload setup for signing
+        if: env.SIGN == 'true'
+        id: upload-setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup
+          path: dist/CpuTemp_Setup_${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+
+      - name: Sign setup
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'CpuTemp' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_CONFIG || 'setup' }}
+          github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-setup
+
+      - name: Use signed setup
+        if: env.SIGN == 'true'
+        run: Copy-Item signed-setup\*.exe dist\ -Force
+
+      - name: Hashes
+        run: |
+          $files = @('CpuTempNative.exe') + (Get-ChildItem dist\*.exe).FullName
+          '| File | SHA-256 |', '|---|---|' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          foreach ($f in $files) {
+            $h = (Get-FileHash $f -Algorithm SHA256).Hash
+            "$h  $(Split-Path $f -Leaf)"
+            "| $(Split-Path $f -Leaf) | ``$h`` |" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: CpuTemp-${{ github.sha }}
+          name: CpuTemp-${{ steps.version.outputs.version }}
           path: |
             CpuTempNative.exe
             dist/*.exe
           if-no-files-found: error
+
+  # A version tag creates a draft release; it is published by hand after checking it.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: CpuTemp-${{ needs.build.outputs.version }}
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SIGNED: ${{ needs.build.outputs.signed }}
+        run: |
+          setup="dist/CpuTemp_Setup_${VERSION}.exe"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; not touching it."
+            exit 0
+          fi
+          {
+            echo "## 安裝"
+            echo "下載 \`CpuTemp_Setup_${VERSION}.exe\` 並執行 (需要系統管理員權限)。"
+            echo
+            if [ "$SIGNED" = "true" ]; then
+              echo "Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org). See the [code signing policy](https://github.com/${GITHUB_REPOSITORY}#code-signing-policy)."
+            else
+              echo "此版本**尚未數位簽章**，Windows 可能顯示 SmartScreen 警告。"
+            fi
+            echo
+            echo "SHA-256: \`$(sha256sum "$setup" | cut -d' ' -f1 | tr a-f A-F)\`"
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" "$setup" --repo "$GITHUB_REPOSITORY" \
+            --draft --verify-tag --title "CpuTemp ${VERSION}" --notes-file notes.md

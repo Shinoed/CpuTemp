@@ -48,6 +48,18 @@ build_setup.bat    :: 產生 dist\CpuTemp_Setup_<version>.exe
 
 GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)) 會在每次 push 時用固定版本的 w64devkit 2.10.1、Inno Setup 7.1.0、PawnIO 2.2.0 (皆驗證 SHA-256) 自動建置，產物可在 Actions 頁面的 Artifacts 下載。
 
+發布新版：把 `CpuTemp.iss` 的 `AppVersion` 和 `cputemp.rc` 的版本改好，推送 `v<版本>` tag (必須與 `AppVersion` 相同)，CI 會建立 draft Release，確認後手動發布。
+
+設定好下列 repository 變數與 secret 後，版本 tag 的建置會先簽 exe 再打包，最後簽安裝檔：
+
+| 名稱 | 類型 | 預設 |
+|---|---|---|
+| `SIGNPATH_API_TOKEN` | secret | — |
+| `SIGNPATH_ORGANIZATION_ID` | variable | — (未設定時跳過簽章) |
+| `SIGNPATH_PROJECT_SLUG` | variable | `CpuTemp` |
+| `SIGNPATH_POLICY_SLUG` | variable | `release-signing` |
+| `SIGNPATH_EXE_CONFIG` / `SIGNPATH_SETUP_CONFIG` | variable | `exe` / `setup` |
+
 ## 檔案
 
 | 檔案 | 說明 |
@@ -62,6 +74,25 @@ GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)) �
 ## 數位簽章
 
 目前的執行檔沒有數位簽章。開啟「智慧型應用程式控制」(Smart App Control) 的 Windows 11 可能會封鎖未簽章的新版本，因此 CPU 使用率功能的程式碼已完成但尚未發布，等取得程式碼簽章後再發布。
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+Only binaries built by the [GitHub Actions workflow](.github/workflows/build.yml) from the source code in this repository are signed: `CpuTempNative.exe` and `CpuTemp_Setup_<version>.exe`. Third-party components bundled in the setup — the PawnIO installer (signed by its author, namazso) and the PawnIO IntelMSR module — are not signed by this project.
+
+| Role | Members |
+|---|---|
+| Committers and reviewers | [Contributors](https://github.com/Shinoed/CpuTemp/graphs/contributors) |
+| Approvers | [Shinoed](https://github.com/Shinoed) (owner) |
+
+All team members use multi-factor authentication for GitHub and SignPath.
+
+### Privacy policy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. CpuTemp only reads CPU temperature and usage locally; the app, its setup script and its PowerShell helpers contain no network code.
+
+PawnIO is a third-party driver; see [pawnio.eu](https://pawnio.eu) for its terms.
 
 ## 授權
 
