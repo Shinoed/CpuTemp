@@ -2,7 +2,7 @@
 ; Build: build_setup.bat  ->  dist\CpuTemp_Setup_<version>.exe
 
 #define AppName    "CpuTemp"
-#define AppVersion "1.0.6"
+#define AppVersion "1.0.7"
 #define AppExe     "CpuTempNative.exe"
 
 [Setup]
