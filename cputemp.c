@@ -374,6 +374,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (LOWORD(wp) > ID_INTERVAL && LOWORD(wp) <= ID_INTERVAL + 10) {
             interval_sec = LOWORD(wp) - ID_INTERVAL;
+            reg_set(L"Interval", interval_sec);
             SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
         }
         return 0;
@@ -422,6 +423,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     nid_use = nid;          // 同一個視窗、同一個回呼訊息，用 uID 區分
     nid_use.uID = 1;
     show_usage = reg_get(L"ShowUsage", 1);
+    interval_sec = reg_get(L"Interval", 2);
+    if (interval_sec != 1 && interval_sec != 5 && interval_sec != 10) interval_sec = 2; // 只接受選單上的值
     read_usage();           // 第一次取樣只當基準點
     if (show_usage) add_usage_icon();
 
