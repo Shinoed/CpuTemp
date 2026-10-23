@@ -2,7 +2,7 @@
 ; Build: build_setup.bat  ->  dist\CpuTemp_Setup_<version>.exe
 
 #define AppName    "CpuTemp"
-#define AppVersion "1.0.4"
+#define AppVersion "1.0.5"
 #define AppExe     "CpuTempNative.exe"
 
 [Setup]
@@ -34,8 +34,8 @@ Name: "en";    MessagesFile: "compiler:Default.isl"
 [CustomMessages]
 zh_tw.IntelOnly=此工具目前只支援 Intel CPU。
 en.IntelOnly=This tool currently supports Intel CPUs only.
-zh_tw.InstallingPawnIO=正在安裝 PawnIO 驅動程式，請在跳出的視窗中完成安裝...
-en.InstallingPawnIO=Installing the PawnIO driver, please complete it in the window that opens...
+zh_tw.InstallingPawnIO=正在背景安裝 PawnIO 驅動程式...
+en.InstallingPawnIO=Installing the PawnIO driver in the background...
 zh_tw.PawnIOMissing=PawnIO 驅動程式沒有安裝完成，CpuTemp 將無法讀取溫度。%n請重新執行安裝程式。
 en.PawnIOMissing=The PawnIO driver was not installed, so CpuTemp cannot read temperatures.%nPlease run setup again.
 zh_tw.PawnIONotRunning=PawnIO 驅動程式已安裝但沒有在執行。請重新開機後再執行一次安裝程式。
@@ -70,8 +70,8 @@ zh_tw.ReqPawnMissing=[需安裝] PawnIO 驅動程式：未安裝或安裝不完�
 en.ReqPawnMissing=[INSTALL] PawnIO driver: missing or incomplete, the bundled 2.2.0 will be installed
 zh_tw.ReqRuntime=[正常] 執行環境：只使用 Windows 內建元件，不需要 .NET 或 Visual C++ 執行階段
 en.ReqRuntime=[OK] Runtime: uses only built-in Windows components, no .NET or Visual C++ runtime needed
-zh_tw.ReadyPawnIO=安裝 PawnIO 驅動程式 2.2.0 (會開啟 PawnIO 安裝視窗)
-en.ReadyPawnIO=Install PawnIO driver 2.2.0 (opens the PawnIO setup window)
+zh_tw.ReadyPawnIO=安裝 PawnIO 驅動程式 2.2.0 (背景安裝)
+en.ReadyPawnIO=Install PawnIO driver 2.2.0 (in the background)
 zh_tw.ReadyTask=設定登入 Windows 時自動啟動
 en.ReadyTask=Start automatically when you sign in to Windows
 
@@ -225,7 +225,10 @@ begin
     begin
       WizardForm.StatusLabel.Caption := CustomMessage('InstallingPawnIO');
       ExtractTemporaryFile('PawnIO_setup.exe');
-      Exec(ExpandConstant('{tmp}\PawnIO_setup.exe'), '', '', SW_SHOW, ewWaitUntilTerminated, RC);
+      { Silent install; if that did not work, fall back to PawnIO's own window }
+      Exec(ExpandConstant('{tmp}\PawnIO_setup.exe'), '-install -silent', '', SW_HIDE, ewWaitUntilTerminated, RC);
+      if not PawnIOInstalled then
+        Exec(ExpandConstant('{tmp}\PawnIO_setup.exe'), '', '', SW_SHOW, ewWaitUntilTerminated, RC);
       if not PawnIOInstalled then
       begin
         SuppressibleMsgBox(CustomMessage('PawnIOMissing'), mbError, MB_OK, IDOK);
@@ -261,6 +264,6 @@ begin
     PawnUninstaller := ExpandConstant('{commonpf64}\PawnIO\uninstall.exe');
     if FileExists(PawnUninstaller) and not UninstallSilent and
        (MsgBox(CustomMessage('RemovePawnIO'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
-      Exec(PawnUninstaller, '-uninstall', '', SW_SHOW, ewWaitUntilTerminated, RC);
+      Exec(PawnUninstaller, '-uninstall -silent', '', SW_HIDE, ewWaitUntilTerminated, RC);
   end;
 end;
