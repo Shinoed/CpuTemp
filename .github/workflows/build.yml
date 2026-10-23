@@ -149,6 +149,18 @@ jobs:
         if: env.SIGN == 'true'
         run: Copy-Item signed-setup\*.exe dist\ -Force
 
+      - name: Smoke test (install, run, uninstall)
+        timeout-minutes: 10
+        run: ./smoke_test.ps1 -Setup dist/CpuTemp_Setup_${{ steps.version.outputs.version }}.exe -Version ${{ steps.version.outputs.version }}
+
+      - name: Upload setup log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: setup-log
+          path: setup.log
+          if-no-files-found: ignore
+
       - name: Hashes
         run: |
           $files = @('CpuTempNative.exe') + (Get-ChildItem dist\*.exe).FullName

@@ -205,7 +205,8 @@ function InitializeSetup: Boolean;
 var
   RC: Integer;
 begin
-  Result := IsIntel;
+  { /SkipCpuCheck=1 is for the CI smoke test, whose runners may have AMD CPUs }
+  Result := IsIntel or (ExpandConstant('{param:SkipCpuCheck|0}') = '1');
   if not Result then
   begin
     SuppressibleMsgBox(CustomMessage('IntelOnly'), mbCriticalError, MB_OK, IDOK);
@@ -245,7 +246,8 @@ begin
       ExtractTemporaryFile('PawnIO_setup.exe');
       { Silent install; if that did not work, fall back to PawnIO's own window }
       Exec(ExpandConstant('{tmp}\PawnIO_setup.exe'), '-install -silent', '', SW_HIDE, ewWaitUntilTerminated, RC);
-      if not PawnIOInstalled then
+      { No window in a silent install: nobody is there to click through it }
+      if not PawnIOInstalled and not WizardSilent then
         Exec(ExpandConstant('{tmp}\PawnIO_setup.exe'), '', '', SW_SHOW, ewWaitUntilTerminated, RC);
       if not PawnIOInstalled then
       begin
