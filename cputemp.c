@@ -158,11 +158,12 @@ static int read_usage(void)
 
 // 風扇轉速：Dell Command | Monitor 提供的 DCIM_NumericSensor (SensorType 5 = 風扇)
 // WMI 查詢跨行程、可能很慢，放在背景執行緒做，UI 執行緒只讀最新結果 (不會卡住選單，也不會在
-// STA 的 COM 呼叫中被重入)。啟動時或斷線後每 15 秒重試一次，最多 3 分鐘：登入時 WMI 可能還沒好，
-// WMI 服務重啟後也能自動接回；一直找不到就結束執行緒，沒裝的人不會多佔資源
+// STA 的 COM 呼叫中被重入)。啟動時或斷線後 3 分鐘內每 15 秒重試：登入時 WMI 可能還沒好，
+// WMI 服務重啟後也能自動接回；之後改成每分鐘一次 (沒有 DCM 時連線立刻失敗，幾乎不花資源)
 #define WM_FANS        (WM_APP + 2)   // 背景執行緒通知 UI：風扇狀態變了
 #define FAN_RETRY_MS   15000
 #define FAN_SEARCH_MS  (3 * 60 * 1000)
+#define FAN_IDLE_MS    60000
 
 static CRITICAL_SECTION fan_lock;
 static int      fan_state = -1;        // -1 = 沒有風扇感應器、0 = 曾經有但暫時讀不到、>0 = 風扇數
@@ -252,9 +253,13 @@ static DWORD WINAPI fan_worker(void *arg)
             wait = (DWORD)fan_period_ms;
             continue;
         }
-        if (GetTickCount64() >= give_up) break;
-        if (had_fans) publish_fans(0, rpm); // 曾經有風扇：圖示留著顯示 "--"，繼續重試
-        wait = FAN_RETRY_MS;
+        if (GetTickCount64() < give_up) {
+            if (had_fans) publish_fans(0, rpm); // 剛讀不到：圖示留著顯示 "--"，很快重試
+            wait = FAN_RETRY_MS;
+        } else {
+            publish_fans(-1, NULL);             // 很久都沒有風扇：拿掉圖示，偶爾看一下 (之後才裝 DCM 也能出現)
+            wait = FAN_IDLE_MS;
+        }
     }
     if (svc) IWbemServices_Release(svc);
     CoUninitialize();

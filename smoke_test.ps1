@@ -207,6 +207,17 @@ SetFan1 3300
 Check 'fan reading resumes after WMI restarts' (WaitFor { [Native]::Tooltip() -match '3300' } 60) "(got '$([Native]::Tooltip())')"
 Check 'still running after WMI restarts' (Running)
 
+# Dell Command | Monitor removed: "--" for 3 minutes, then the icon goes away (the fan
+# toggle is ignored again); reinstalled later: fans come back within a minute
+Get-CimInstance -Namespace root -ClassName __Namespace -Filter "Name='dcim'" | Remove-CimInstance
+Check 'fan line leaves the tooltip when fans are gone' (WaitFor { [Native]::Tooltip() -notmatch '風扇' } 30) "(got '$([Native]::Tooltip())')"
+Start-Sleep 200
+Command 102 | Out-Null
+Start-Sleep 1
+Check 'fan icon removed after 3 minutes without fans' ((RegValue ShowFan) -eq 1) "(ShowFan $(RegValue ShowFan))"
+mofcomp.exe $mof | Out-Null
+Check 'fans come back after Dell Command | Monitor returns' (WaitFor { [Native]::Tooltip() -match '風扇 \d+ / \d+ RPM' } 90) "(got '$([Native]::Tooltip())')"
+
 Command 100 | Out-Null         # "結束"
 Check 'exits from the menu' (WaitFor { -not (Running) })
 

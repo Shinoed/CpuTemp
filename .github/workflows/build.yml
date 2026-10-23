@@ -167,7 +167,7 @@ jobs:
         run: Copy-Item signed-setup\*.exe dist\ -Force
 
       - name: Smoke test (install, run, uninstall)
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: ./smoke_test.ps1 -Setup dist/CpuTemp_Setup_${{ steps.version.outputs.version }}.exe -Version ${{ steps.version.outputs.version }}
 
       - name: Upload setup log
