@@ -146,7 +146,7 @@ Check 'fake DCIM class compiled' ($LASTEXITCODE -eq 0)
 
 Start-Process $Exe
 Check 'fan speeds in tooltip' (WaitFor { [Native]::Tooltip() -match '風扇 (2345 / 1800|1800 / 2345) RPM' }) "(got '$([Native]::Tooltip())')"
-Check 'temperature sensor is not shown as a fan' ([Native]::Tooltip() -notmatch '45 RPM| / 45')
+Check 'temperature sensor is not shown as a fan' ([Native]::Tooltip() -match '風扇 \d+ / \d+ RPM$') "(got '$([Native]::Tooltip())')"
 
 Set-ItemProperty $Reg Interval 1 -Type DWord
 Get-CimInstance -Namespace root\dcim\sysman -ClassName DCIM_NumericSensor -Filter "DeviceID='Fan1'" |
