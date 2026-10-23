@@ -60,6 +60,24 @@ GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)) �
 | `SIGNPATH_POLICY_SLUG` | variable | `release-signing` |
 | `SIGNPATH_EXE_CONFIG` / `SIGNPATH_SETUP_CONFIG` | variable | `exe` / `setup` |
 
+SignPath 專案的兩個 artifact configuration (GitHub artifact 是 zip，內含單一檔案)：
+
+```xml
+<!-- exe -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="CpuTempNative.exe"><authenticode-sign/></pe-file>
+  </zip-file>
+</artifact-configuration>
+
+<!-- setup -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="CpuTemp_Setup_*.exe"><authenticode-sign/></pe-file>
+  </zip-file>
+</artifact-configuration>
+```
+
 ## 檔案
 
 | 檔案 | 說明 |

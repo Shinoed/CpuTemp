@@ -120,8 +120,14 @@ static void read_cores(int *out)
 static ULONGLONG ft64(FILETIME f) { return ((ULONGLONG)f.dwHighDateTime << 32) | f.dwLowDateTime; }
 
 // 兩次取樣之間的 CPU 使用率 (%)；kernel 時間已包含 idle
+// 距上次取樣不到 500 ms 時沿用上次結果 (啟動、主題切換時會連續呼叫，間隔太短算不準)
 static int read_usage(void)
 {
+    static int last = -1;
+    static ULONGLONG last_tick;
+    ULONGLONG now = GetTickCount64();
+    if (prev_total && now - last_tick < 500) return last;
+
     FILETIME idle, kernel, user;
     if (!GetSystemTimes(&idle, &kernel, &user)) return -1;
     ULONGLONG i = ft64(idle), t = ft64(kernel) + ft64(user);
@@ -129,8 +135,10 @@ static int read_usage(void)
     int first = prev_total == 0;
     prev_idle = i;
     prev_total = t;
-    if (first || dt == 0) return -1;
-    return (int)((dt - di) * 100 / dt);
+    last_tick = now;
+    if (first || dt == 0) return last = -1;
+    if (di > dt) di = dt;
+    return last = (int)((dt - di) * 100 / dt);
 }
 
 static int reg_get(const wchar_t *name, int def)
