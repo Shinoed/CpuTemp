@@ -1,3 +1,4 @@
 # Build outputs
 *.exe
 *.o
+dist/
