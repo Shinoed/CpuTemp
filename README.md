@@ -89,6 +89,7 @@ SignPath 專案的兩個 artifact configuration (GitHub artifact 是 zip，內�
 |---|---|
 | `cputemp.c` | 工作列程式 |
 | `usage.h`, `test_usage.c` | CPU 使用率計算與其單元測試 (CI 會執行) |
+| `test_icons.c` | 用程式本身的繪圖碼畫出各尺寸圖示、檢查數字大小並輸出預覽圖 (CI 會執行，預覽圖在 Artifacts 的 icon-previews) |
 | `fan.h`, `test_fan.c` | 風扇轉速換算、提示文字格式與其單元測試 (CI 會執行) |
 | `smoke_test.ps1` | CI 的安裝後測試：靜默安裝、操作執行中的程式 (含模擬的 Dell 風扇感應器)、解除安裝 |
 | `cputemp.rc`, `app.manifest` | 資源：manifest、版本資訊、內嵌的 IntelMSR 模組 |
