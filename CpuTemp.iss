@@ -2,7 +2,7 @@
 ; Build: build_setup.bat  ->  dist\CpuTemp_Setup_<version>.exe
 
 #define AppName    "CpuTemp"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppExe     "CpuTempNative.exe"
 
 [Setup]
@@ -44,6 +44,15 @@ zh_tw.TaskFailed=無法建立開機自動啟動的排程工作。
 en.TaskFailed=Could not register the startup task.
 zh_tw.RemovePawnIO=要一併移除 PawnIO 驅動程式嗎？%n%n其他硬體監控工具 (例如 LibreHardwareMonitor、FanControl) 可能也需要它。
 en.RemovePawnIO=Also remove the PawnIO driver?%n%nOther hardware tools (e.g. LibreHardwareMonitor, FanControl) may also need it.
+
+zh_tw.AlreadyInstalled=CpuTemp 已經安裝在這台電腦上
+en.AlreadyInstalled=CpuTemp is already installed
+zh_tw.ChooseAction=請選擇要執行的動作：
+en.ChooseAction=What would you like to do?
+zh_tw.ActionReinstall=重新安裝 / 更新
+en.ActionReinstall=Reinstall / update
+zh_tw.ActionUninstall=解除安裝
+en.ActionUninstall=Uninstall
 
 [Files]
 Source: "{#AppExe}";             DestDir: "{app}"; Flags: ignoreversion
@@ -102,11 +111,44 @@ begin
   if RC = 0 then Sleep(1000); { killed: give Windows time to release the exe }
 end;
 
+function GetUninstaller: String;
+begin
+  Result := '';
+  if RegQueryStringValue(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppName}_is1',
+       'UninstallString', Result) then
+    Result := RemoveQuotes(Result);
+  if (Result <> '') and not FileExists(Result) then
+    Result := '';
+end;
+
+{ Already installed: let the same setup exe reinstall/update or uninstall }
 function InitializeSetup: Boolean;
+var
+  Uninstaller: String;
+  RC: Integer;
 begin
   Result := IsIntel;
   if not Result then
+  begin
     SuppressibleMsgBox(CustomMessage('IntelOnly'), mbCriticalError, MB_OK, IDOK);
+    Exit;
+  end;
+
+  Uninstaller := GetUninstaller;
+  if (Uninstaller = '') or WizardSilent then Exit;
+
+  case TaskDialogMsgBox(CustomMessage('AlreadyInstalled'), CustomMessage('ChooseAction'),
+         mbConfirmation, MB_YESNOCANCEL, [CustomMessage('ActionReinstall'),
+         CustomMessage('ActionUninstall')], 0) of
+    IDYES: Result := True;
+    IDNO:
+      begin
+        Exec(Uninstaller, '', '', SW_SHOW, ewWaitUntilTerminated, RC);
+        Result := False;
+      end;
+  else
+    Result := False;
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
