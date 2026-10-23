@@ -180,6 +180,13 @@ static IWbemServices *wmi_connect(void)
         return NULL;
     BSTR ns = SysAllocString(L"ROOT\\DCIM\\SYSMAN");
     if (FAILED(IWbemLocator_ConnectServer(loc, ns, NULL, NULL, NULL, 0, NULL, NULL, &svc))) svc = NULL;
+    // DCM 的提供者要模擬呼叫端身分，不然列舉時回 WBEM_E_ACCESS_DENIED。CoInitializeSecurity 是整個行程
+    // 只能設一次的預設值，若別處已先初始化 COM 安全性就不生效 (實機上就是讀不到風扇)，所以直接設在這條連線上
+    if (svc && FAILED(CoSetProxyBlanket((IUnknown *)svc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL, RPC_C_AUTHN_LEVEL_CALL,
+                                        RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE))) {
+        IWbemServices_Release(svc);
+        svc = NULL;
+    }
     SysFreeString(ns);
     IWbemLocator_Release(loc);
     return svc;
