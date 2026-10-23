@@ -83,7 +83,10 @@ end;
 
 function PawnIOInstalled: Boolean;
 begin
-  Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\PawnIO');
+  { Both the driver service and the DLL CpuTemp loads must be present; right after a
+    PawnIO uninstall the service key can linger until reboot while the files are gone }
+  Result := RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\PawnIO') and
+            FileExists(ExpandConstant('{commonpf64}\PawnIO\PawnIOLib.dll'));
 end;
 
 function PowerShell: String;
