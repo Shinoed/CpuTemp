@@ -164,6 +164,7 @@ static int read_usage(void)
 #define FAN_RETRY_MS   15000
 #define FAN_SEARCH_MS  (3 * 60 * 1000)
 #define FAN_IDLE_MS    60000
+#define FAN_RESCAN     30             // 用路徑讀幾次後重新查詢 (約 5 分鐘)
 #define FAN_PERIOD_MS  10000          // 有風扇時的讀取間隔：DCM 查詢很重，2 秒一次讓 WmiPrvSE 多用一個核心約 12~21% (實測)
 
 static CRITICAL_SECTION fan_lock;
@@ -192,39 +193,87 @@ static IWbemServices *wmi_connect(void)
     return svc;
 }
 
-// 回傳風扇數 (0 = 沒有風扇)，查詢失敗 (連線斷了、類別不存在) 回傳 -1
-static int read_fans(IWbemServices *svc, int *rpm)
+// 從 DCM 的感應器物件取出 RPM；DCM 在風扇停轉時把 CurrentReading 回成 NULL (實測：閒置時 NULL，CPU 滿載 3 秒內變成 2477 RPM)
+static int sensor_rpm(IWbemClassObject *o)
 {
+    VARIANT r, m;
+    VariantInit(&r);
+    VariantInit(&m);
+    long reading = -1, mod = 0;
+    if (SUCCEEDED(IWbemClassObject_Get(o, L"CurrentReading", 0, &r, NULL, NULL))) {
+        if (V_VT(&r) == VT_NULL) reading = 0;
+        else if (SUCCEEDED(VariantChangeType(&r, &r, 0, VT_I4))) reading = r.lVal;
+    }
+    if (SUCCEEDED(IWbemClassObject_Get(o, L"UnitModifier", 0, &m, NULL, NULL)) &&
+        SUCCEEDED(VariantChangeType(&m, &m, 0, VT_I4))) mod = m.lVal;
+    VariantClear(&r);
+    VariantClear(&m);
+    return fan_rpm(reading, mod);
+}
+
+// 查詢時記下每個風扇的物件路徑，之後用 GetObject 直接取：實測每次 WmiPrvSE 的 CPU 和延遲約是查詢的一半
+static BSTR fan_paths[MAX_FANS];
+static int  fan_paths_n;
+
+static void clear_fan_paths(void)
+{
+    for (int i = 0; i < fan_paths_n; i++) SysFreeString(fan_paths[i]);
+    fan_paths_n = 0;
+}
+
+// 回傳風扇數 (0 = 沒有風扇)，查詢失敗 (連線斷了、類別不存在) 回傳 -1
+static int query_fans(IWbemServices *svc, int *rpm)
+{
+    clear_fan_paths();
     IEnumWbemClassObject *e = NULL;
     BSTR lang = SysAllocString(L"WQL");
-    BSTR q = SysAllocString(L"SELECT CurrentReading, UnitModifier FROM DCIM_NumericSensor WHERE SensorType = 5");
+    BSTR q = SysAllocString(L"SELECT __RELPATH, CurrentReading, UnitModifier FROM DCIM_NumericSensor WHERE SensorType = 5");
     HRESULT hr = IWbemServices_ExecQuery(svc, lang, q, WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &e);
     SysFreeString(lang);
     SysFreeString(q);
     if (FAILED(hr)) return -1;
 
-    int n = 0;
+    int n = 0, paths = 1;
     IWbemClassObject *o;
     ULONG got;
     while (n < MAX_FANS && (hr = IEnumWbemClassObject_Next(e, 2000, 1, &o, &got)) == WBEM_S_NO_ERROR && got) {
-        VARIANT r, m;
-        VariantInit(&r);
-        VariantInit(&m);
-        long reading = -1, mod = 0;
-        // DCM 在風扇停轉時把 CurrentReading 回成 NULL (實測：閒置時 NULL，CPU 滿載 3 秒內變成 2477 RPM)
-        if (SUCCEEDED(IWbemClassObject_Get(o, L"CurrentReading", 0, &r, NULL, NULL))) {
-            if (V_VT(&r) == VT_NULL) reading = 0;
-            else if (SUCCEEDED(VariantChangeType(&r, &r, 0, VT_I4))) reading = r.lVal;
+        VARIANT p;
+        VariantInit(&p);
+        if (SUCCEEDED(IWbemClassObject_Get(o, L"__RELPATH", 0, &p, NULL, NULL)) && V_VT(&p) == VT_BSTR) {
+            fan_paths[n] = p.bstrVal;   // 交給 fan_paths 保管
+            V_VT(&p) = VT_EMPTY;
+        } else {
+            fan_paths[n] = NULL;
+            paths = 0;
         }
-        if (SUCCEEDED(IWbemClassObject_Get(o, L"UnitModifier", 0, &m, NULL, NULL)) &&
-            SUCCEEDED(VariantChangeType(&m, &m, 0, VT_I4))) mod = m.lVal;
-        VariantClear(&r);
-        VariantClear(&m);
+        VariantClear(&p);
+        rpm[n++] = sensor_rpm(o);
         IWbemClassObject_Release(o);
-        rpm[n++] = fan_rpm(reading, mod);
     }
     IEnumWbemClassObject_Release(e);
+    fan_paths_n = n;
+    if (!paths) clear_fan_paths();      // 有路徑拿不到：之後都用查詢
     return FAILED(hr) ? -1 : n;
+}
+
+// 用記下的路徑讀；沒有路徑或任一個讀不到 (風扇不見了、連線斷了) 回傳 -1，由呼叫端改回查詢
+static int reget_fans(IWbemServices *svc, int *rpm)
+{
+    if (!fan_paths_n) return -1;
+    for (int i = 0; i < fan_paths_n; i++) {
+        IWbemClassObject *o = NULL;
+        if (FAILED(IWbemServices_GetObject(svc, fan_paths[i], 0, NULL, &o, NULL))) return -1;
+        rpm[i] = sensor_rpm(o);
+        IWbemClassObject_Release(o);
+    }
+    return fan_paths_n;
+}
+
+// 每 FAN_RESCAN 次讀取重新查詢一次，風扇數量變了也找得到
+static int read_fans(IWbemServices *svc, int *rpm, int fresh)
+{
+    int n = fresh ? -1 : reget_fans(svc, rpm);
+    return n > 0 ? n : query_fans(svc, rpm);
 }
 
 static void publish_fans(int state, const int *rpm)
@@ -249,10 +298,11 @@ static DWORD WINAPI fan_worker(void *arg)
     int had_fans = 0;
     ULONGLONG give_up = GetTickCount64() + FAN_SEARCH_MS;
     DWORD wait = 0;
+    int reads = 0;
     while (WaitForSingleObject(fan_stop, wait) == WAIT_TIMEOUT) {
         int rpm[MAX_FANS], n = -1;
         if (!svc) svc = wmi_connect();
-        if (svc && (n = read_fans(svc, rpm)) < 0) { // 連線斷了 (例如 WMI 服務重啟)：丟掉，下一輪重連
+        if (svc && (n = read_fans(svc, rpm, reads++ % FAN_RESCAN == 0)) < 0) { // 連線斷了 (例如 WMI 服務重啟)：丟掉，下一輪重連
             IWbemServices_Release(svc);
             svc = NULL;
         }
@@ -272,6 +322,7 @@ static DWORD WINAPI fan_worker(void *arg)
         }
     }
     if (svc) IWbemServices_Release(svc);
+    clear_fan_paths();
     CoUninitialize();
     publish_fans(-1, NULL);
     return 0;
