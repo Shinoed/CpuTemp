@@ -180,23 +180,23 @@ function SetFan1($rpm) {
 }
 # Dell Command | Monitor reports a stopped fan as a NULL reading, not 0
 SetFan1 $null
-Check 'stopped fan (NULL reading) shows 0 RPM' (WaitFor { [Native]::Tooltip() -match '風扇 (0 / 1800|1800 / 0) RPM' }) "(got '$([Native]::Tooltip())')"
+Check 'stopped fan (NULL reading) shows 0 RPM' (WaitFor { [Native]::Tooltip() -match '風扇 (0 / 1800|1800 / 0) RPM' } 25) "(got '$([Native]::Tooltip())')"
 
 SetFan1 3100
 Command (200 + 1) | Out-Null
 Check 'interval 1 s is saved' (WaitFor { (RegValue Interval) -eq 1 }) "(got $(RegValue Interval))"
-Check 'fan speed updates' (WaitFor { [Native]::Tooltip() -match '3100' }) "(got '$([Native]::Tooltip())')"
+Check 'fan speed updates' (WaitFor { [Native]::Tooltip() -match '3100' } 25) "(got '$([Native]::Tooltip())')"
 
-# WMI queries run off the UI thread: the window answers at once while fans are polled every second
+# WMI queries run off the UI thread: the window answers at once while fans are polled
 $pings = 1..20 | ForEach-Object { [Native]::Ping(); Start-Sleep -Milliseconds 250 }
 $slowest = ($pings | Measure-Object -Maximum).Maximum
 Check 'UI thread responsive while polling fans' (($pings -notcontains -1) -and $slowest -lt 300) "(slowest $slowest ms; $($pings -join ','))"
 
-# 1 s interval: 40 WMI queries; committed memory must not keep growing
+# fans are read every 10 s; committed memory must not keep growing
 $m1 = Memory 'fans, after 5 s'
 Start-Sleep 40
 $m2 = Memory 'fans, after 45 s'
-Check 'no memory growth over 40 fan queries' ($m2.Commit - $m1.Commit -lt 0.5) "(commit +$([math]::Round($m2.Commit - $m1.Commit, 2)) MB)"
+Check 'no memory growth while polling fans' ($m2.Commit - $m1.Commit -lt 0.5) "(commit +$([math]::Round($m2.Commit - $m1.Commit, 2)) MB)"
 Check 'private working set under 3 MB with fans' ($m2.PrivateWS -lt 3) "($([math]::Round($m2.PrivateWS, 2)) MB)"
 
 Command 102 | Out-Null

@@ -164,12 +164,12 @@ static int read_usage(void)
 #define FAN_RETRY_MS   15000
 #define FAN_SEARCH_MS  (3 * 60 * 1000)
 #define FAN_IDLE_MS    60000
+#define FAN_PERIOD_MS  10000          // 有風扇時的讀取間隔：DCM 查詢很重，2 秒一次讓 WmiPrvSE 多用一個核心約 12~21% (實測)
 
 static CRITICAL_SECTION fan_lock;
 static int      fan_state = -1;        // -1 = 沒有風扇感應器、0 = 曾經有但暫時讀不到、>0 = 風扇數
 static int      fan_rpms[MAX_FANS];    // fan_state > 0 時有效；以上兩個都受 fan_lock 保護
 static HANDLE   fan_thread, fan_stop;
-static volatile LONG fan_period_ms = 2000;
 static HWND     main_hwnd;
 
 static IWbemServices *wmi_connect(void)
@@ -260,7 +260,7 @@ static DWORD WINAPI fan_worker(void *arg)
             had_fans = 1;
             give_up = GetTickCount64() + FAN_SEARCH_MS;
             publish_fans(n, rpm);
-            wait = (DWORD)fan_period_ms;
+            wait = FAN_PERIOD_MS;
             continue;
         }
         if (GetTickCount64() < give_up) {
@@ -604,7 +604,6 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (LOWORD(wp) > ID_INTERVAL && valid_interval(LOWORD(wp) - ID_INTERVAL)) {
             interval_sec = LOWORD(wp) - ID_INTERVAL;
-            fan_period_ms = interval_sec * 1000;
             reg_set(L"Interval", interval_sec);
             SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
         }
@@ -665,7 +664,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     nid_fan = nid;          // 找到風扇時才由 update_fan 加入
     nid_fan.uID = 2;
     show_fan = reg_get(L"ShowFan", 1);
-    fan_period_ms = interval_sec * 1000;
     start_fans(hwnd);
 
     update(1);
