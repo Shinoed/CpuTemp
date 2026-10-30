@@ -178,6 +178,10 @@ function SetFan1($rpm) {
     Get-CimInstance -Namespace root\dcim\sysman -ClassName DCIM_NumericSensor -Filter "DeviceID='Fan1'" |
         Set-CimInstance -Property @{ CurrentReading = $rpm }
 }
+# Dell Command | Monitor reports a stopped fan as a NULL reading, not 0
+SetFan1 $null
+Check 'stopped fan (NULL reading) shows 0 RPM' (WaitFor { [Native]::Tooltip() -match '風扇 (0 / 1800|1800 / 0) RPM' }) "(got '$([Native]::Tooltip())')"
+
 SetFan1 3100
 Command (200 + 1) | Out-Null
 Check 'interval 1 s is saved' (WaitFor { (RegValue Interval) -eq 1 }) "(got $(RegValue Interval))"

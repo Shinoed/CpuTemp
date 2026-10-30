@@ -211,8 +211,11 @@ static int read_fans(IWbemServices *svc, int *rpm)
         VariantInit(&r);
         VariantInit(&m);
         long reading = -1, mod = 0;
-        if (SUCCEEDED(IWbemClassObject_Get(o, L"CurrentReading", 0, &r, NULL, NULL)) &&
-            SUCCEEDED(VariantChangeType(&r, &r, 0, VT_I4))) reading = r.lVal;
+        // DCM 在風扇停轉時把 CurrentReading 回成 NULL (實測：閒置時 NULL，CPU 滿載 3 秒內變成 2477 RPM)
+        if (SUCCEEDED(IWbemClassObject_Get(o, L"CurrentReading", 0, &r, NULL, NULL))) {
+            if (V_VT(&r) == VT_NULL) reading = 0;
+            else if (SUCCEEDED(VariantChangeType(&r, &r, 0, VT_I4))) reading = r.lVal;
+        }
         if (SUCCEEDED(IWbemClassObject_Get(o, L"UnitModifier", 0, &m, NULL, NULL)) &&
             SUCCEEDED(VariantChangeType(&m, &m, 0, VT_I4))) mod = m.lVal;
         VariantClear(&r);
