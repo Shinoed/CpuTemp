@@ -56,7 +56,8 @@ static NOTIFYICONDATAW nid, nid_use, nid_fan;  // 溫度 / CPU 使用率 / 風�
 static UINT     wm_taskbar_created;
 static int      icon_size, interval_sec = 2, last_shown = -9999, light_theme;
 static int      show_usage = 1, last_usage = -9999;
-static int      show_fan = 1, fan_icon_on;
+static int      fan_icon_on;
+static volatile int show_fan = 1;      // 背景執行緒也會看
 static wchar_t  fan_txt[8], fan_tip[64];   // 風扇圖示目前顯示的文字和提示，沒變就不重畫
 static ULONGLONG prev_idle, prev_total;
 static HICON    cur_icon, cur_icon_use, cur_icon_fan;
@@ -323,16 +324,25 @@ static DWORD WINAPI fan_worker(void *arg)
 
     IWbemServices *svc = NULL;
     HANDLE events[] = { fan_stop, fan_wake };
-    int had_fans = 0, prev[MAX_FANS], prev_n = 0;
+    int had_fans = 0, paused = 0, prev[MAX_FANS], prev_n = 0;
     ULONGLONG give_up = GetTickCount64() + FAN_SEARCH_MS, next_query = 0, last_read = 0;
     DWORD wait = 0, why;
     while ((why = WaitForMultipleObjects(2, events, FALSE, wait)) == WAIT_TIMEOUT || why == WAIT_OBJECT_0 + 1) {
+        if (!show_fan && had_fans) { // 不顯示就不讀，等 UI 執行緒叫醒；還沒找到風扇時要繼續找，選單才有這個開關
+            paused = 1;
+            wait = INFINITE;
+            continue;
+        }
         ULONGLONG now = GetTickCount64();
         if (why != WAIT_TIMEOUT && now - last_read < FAN_PERIOD_MS) { // 被叫醒也要維持最短間隔
             wait = (DWORD)(last_read + FAN_PERIOD_MS - now);
             continue;
         }
         last_read = now;
+        if (paused) { // 暫停的時間不算在找不到風扇的時間裡
+            paused = 0;
+            give_up = now + FAN_SEARCH_MS;
+        }
 
         int rpm[MAX_FANS], n = -1, fresh = now >= next_query;
         if (!svc) svc = wmi_connect();
@@ -356,6 +366,7 @@ static DWORD WINAPI fan_worker(void *arg)
             wait = FAN_RETRY_MS;
         } else {
             publish_fans(-1, NULL);             // 很久都沒有風扇：拿掉圖示，偶爾看一下 (之後才裝 DCM 也能出現)
+            had_fans = 0;
             wait = FAN_IDLE_MS;
         }
     }
@@ -619,9 +630,9 @@ static void update(int force)
     if (hover && pio && ncores) read_cores(cores);
 
     wchar_t fan[40] = L"";
-    int rpm[MAX_FANS], nfans = get_fans(rpm);
+    int rpm[MAX_FANS], nfans = show_fan ? get_fans(rpm) : 0;
     if (nfans > 0) kick_fans(t);
-    int fan_len =nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
+    int fan_len = nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
     if (fan_len) fan[0] = L'\n', fan_len++;
 
     // 提示文字沒變就不送給 Explorer (跨行程)，圖示只有封裝溫度變了才重畫；風扇那行留在最後
@@ -724,7 +735,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (get_fans(rpm) < 0) return 0; // 沒有風扇時選單不會有這項
             show_fan = !show_fan;
             reg_set(L"ShowFan", show_fan);
-            update_fan(1);
+            if (show_fan) SetEvent(fan_wake);
+            update(0);
             return 0;
         }
         if (LOWORD(wp) > ID_INTERVAL && valid_interval(LOWORD(wp) - ID_INTERVAL)) {

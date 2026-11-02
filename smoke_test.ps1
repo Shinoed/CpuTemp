@@ -205,9 +205,11 @@ Check 'private working set under 3 MB with fans' ($m2.PrivateWS -lt 3) "($([math
 
 Command 102 | Out-Null
 Check 'fan icon off is saved' (WaitFor { (RegValue ShowFan) -eq 0 }) "(got $(RegValue ShowFan))"
+Check 'fan line leaves the tooltip when the icon is off' (WaitFor { [Native]::Tooltip() -notmatch '風扇' }) "(got '$([Native]::Tooltip())')"
+SetFan1 3200
 Command 102 | Out-Null
 Check 'fan icon on is saved' (WaitFor { (RegValue ShowFan) -eq 1 }) "(got $(RegValue ShowFan))"
-Check 'fan line stays in the tooltip' ([Native]::Tooltip() -match '3100')
+Check 'fans are read again when the icon is on' (WaitFor { [Native]::Tooltip() -match '3200' } 15) "(got '$([Native]::Tooltip())')"
 
 # The WMI service restarting drops the app's connection: it must reconnect by itself
 Restart-Service winmgmt -Force

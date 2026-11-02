@@ -10,6 +10,10 @@ static int notify_calls;
 static BOOL fake_notify(DWORD msg, NOTIFYICONDATAW *data) { notify_calls++; return TRUE; }
 #define Shell_NotifyIconW fake_notify
 
+// 不要動到這台電腦上的設定
+static LONG fake_reg_set(HKEY key, const wchar_t *sub, const wchar_t *name, DWORD type, const void *data, DWORD size) { return ERROR_SUCCESS; }
+#define RegSetKeyValueW fake_reg_set
+
 // 換掉 WMI 連線，背景執行緒才能跑假的物件；讀取間隔也改短，測試不必等那麼久
 #define COBJMACROS
 #include <objbase.h>
@@ -280,6 +284,32 @@ static void test_fan_worker(HWND hwnd)
     stop_fans();
 }
 
+static void test_fan_icon_off(HWND hwnd)
+{
+    int rpm[MAX_FANS];
+    fake_flip = 0;
+    show_fan = 0;
+    DeleteCriticalSection(&fan_lock);
+    start_fans(hwnd);
+    check("fans are found once while the icon is off", reads_during(1500) == 1);
+    check("the menu knows about the fans", get_fans(rpm) == 1);
+    update(0);
+    check("no fan line while the icon is off", !wcsstr(nid.szTip, L"風扇"));
+
+    wnd_proc(hwnd, WM_COMMAND, ID_FAN, 0);
+    check("turning the icon on reads at once", show_fan && reads_during(300) >= 1);
+    update(0);
+    check("fan line comes back", wcsstr(nid.szTip, L"風扇") != NULL);
+
+    wnd_proc(hwnd, WM_COMMAND, ID_FAN, 0);
+    check("turning the icon off removes the fan line at once", !show_fan && !wcsstr(nid.szTip, L"風扇"));
+    Sleep(1200); // 等目前的讀取間隔結束
+    check("no reads while the icon is off", reads_during(1500) == 0);
+
+    stop_fans();
+    show_fan = 1;
+}
+
 // 安裝後由 smoke test 執行：路徑要真的載入得到 PawnIO。程式本身在 AMD 的 CI runner 上不會載入它，這裡和 CPU 廠牌無關
 static void test_pawnio_installed(void)
 {
@@ -301,6 +331,7 @@ int main(int argc, char **argv)
         test_cores_read_on_hover(hwnd);
         test_kick_fans();
         test_fan_worker(hwnd);
+        test_fan_icon_off(hwnd);
     }
     if (!fails) puts("all app tests passed");
     return fails != 0;
