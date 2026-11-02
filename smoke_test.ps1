@@ -139,6 +139,7 @@ Start-Sleep 2
 Check 'only one instance runs' (@(Get-Process CpuTempNative -ErrorAction SilentlyContinue).Count -eq 1)
 
 Check 'tooltip is set' (WaitFor { [Native]::Tooltip() -like 'CPU*' }) "(got '$([Native]::Tooltip())')"
+Check 'PawnIO DLL found' ([Native]::Tooltip() -notmatch '找不到 PawnIO') "(got '$([Native]::Tooltip())')" # AMD runners stop at the CPU check before loading it
 $m0 = Memory 'no fans'
 Check 'private working set under 3 MB without fans' ($m0.PrivateWS -lt 3) "($([math]::Round($m0.PrivateWS, 2)) MB)"
 Check 'no fan line without Dell Command | Monitor' ([Native]::Tooltip() -notmatch '風扇') "(got '$([Native]::Tooltip())')"

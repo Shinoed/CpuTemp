@@ -82,6 +82,18 @@ static void init_cores(void)
             core_mask[ncores++] = info[i].ProcessorMask; // 每個實體核心一個遮罩 (超執行緒共用)
 }
 
+// 本程式以管理員執行且登入時不跳 UAC，不能用 %ProgramFiles%：一般權限的程式可以用 HKCU\Environment
+// 覆寫它，讓我們載入假的 DLL，所以從只有管理員能改的 HKLM 讀
+static int pawnio_dll_path(wchar_t *path, int size)
+{
+    wchar_t dir[MAX_PATH];
+    DWORD sz = sizeof dir;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion", L"ProgramFilesDir",
+                     RRF_RT_REG_SZ, NULL, dir, &sz) != ERROR_SUCCESS) return 0;
+    int n = _snwprintf(path, size, L"%ls\\PawnIO\\PawnIOLib.dll", dir);
+    return n > 0 && n < size;
+}
+
 static int init_sensor(void)
 {
     int r[4];
@@ -89,8 +101,7 @@ static int init_sensor(void)
     if (r[1] != 0x756e6547) { err_msg = L"目前只支援 Intel CPU"; return 0; } // "Genu"
 
     wchar_t path[MAX_PATH];
-    ExpandEnvironmentStringsW(L"%ProgramFiles%\\PawnIO\\PawnIOLib.dll", path, MAX_PATH);
-    HMODULE lib = LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    HMODULE lib = pawnio_dll_path(path, MAX_PATH) ? LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH) : NULL;
     if (!lib) { err_msg = L"找不到 PawnIO，請先安裝"; return 0; }
     open_fn p_open = (open_fn)GetProcAddress(lib, "pawnio_open");
     load_fn p_load = (load_fn)GetProcAddress(lib, "pawnio_load");
