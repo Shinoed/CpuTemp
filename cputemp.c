@@ -82,8 +82,8 @@ static void init_cores(void)
             core_mask[ncores++] = info[i].ProcessorMask; // 每個實體核心一個遮罩 (超執行緒共用)
 }
 
-// 本程式以管理員執行且登入時不跳 UAC，不能用 %ProgramFiles%：一般權限的程式可以用 HKCU\Environment
-// 覆寫它，讓我們載入假的 DLL，所以從只有管理員能改的 HKLM 讀
+// 本程式以管理員執行且登入時不跳 UAC，不能用 %ProgramFiles%：64 位元行程的這個變數取自 ProgramW6432 (實測)，
+// 一般權限的程式可能透過 HKCU\Environment 改它，讓我們載入假的 DLL，所以從只有管理員能改的 HKLM 讀
 static int pawnio_dll_path(wchar_t *path, int size)
 {
     wchar_t dir[MAX_PATH];

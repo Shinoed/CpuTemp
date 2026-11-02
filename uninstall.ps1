@@ -7,14 +7,14 @@
 #   -InstallDir / -KeyRoot  override locations (for testing)
 # A log is written to %TEMP%\CpuTemp_uninstall.log.
 param([switch]$Quiet, [switch]$RemovePawnIO, [switch]$NoConfirm,
-      [string]$InstallDir = (Join-Path $env:ProgramFiles 'CpuTemp'),
+      [string]$InstallDir,
       [string]$KeyRoot = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall')
 
 # Setup (a 32-bit process) can start the 32-bit PowerShell, which sees Program Files (x86)
 # and the WOW6432Node registry view, so nothing of the 64-bit install was found.
 # Re-run in 64-bit PowerShell with the same arguments.
 if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
-    $ps64 = Join-Path $env:WINDIR 'sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    $ps64 = Join-Path ([Environment]::GetFolderPath('Windows')) 'sysnative\WindowsPowerShell\v1.0\powershell.exe'
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`"")
     foreach ($p in $PSBoundParameters.GetEnumerator()) {
         if ($p.Value -is [switch]) { if ($p.Value) { $argList += "-$($p.Key)" } }
@@ -24,11 +24,15 @@ if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProces
     exit $proc.ExitCode
 }
 
+# Elevated paths must not come from environment variables: a non-elevated program may be able to
+# set them in HKCU\Environment (%ProgramFiles% of a 64-bit process comes from ProgramW6432) and
+# make us delete or run something else. Only administrators can change HKLM.
+$ProgramFiles = (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion').ProgramFilesDir
 $AppName = 'CpuTemp'
-$Dir     = $InstallDir
+$Dir     = if ($InstallDir) { $InstallDir } else { Join-Path $ProgramFiles $AppName }
 $Task    = 'CpuTempTray'
 $ArpKeys = "$KeyRoot\$AppName", "$KeyRoot\${AppName}_is1"   # _is1: 1.0.0-1.0.5 (Inno uninstaller)
-$PawnUninstaller = Join-Path $env:ProgramFiles 'PawnIO\uninstall.exe'
+$PawnUninstaller = Join-Path $ProgramFiles 'PawnIO\uninstall.exe'
 $Log     = Join-Path $env:TEMP 'CpuTemp_uninstall.log'
 
 function Log($msg) { Add-Content -Path $Log -Value "$(Get-Date -Format 'HH:mm:ss') $msg" -Encoding UTF8 }
