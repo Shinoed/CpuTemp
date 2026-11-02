@@ -14,6 +14,7 @@
 #include <shellapi.h>
 #include <imm.h>
 #include <wchar.h>
+#include <string.h>
 #define COBJMACROS
 #include <objbase.h>
 #include <wbemidl.h>
@@ -57,7 +58,7 @@ static UINT     wm_taskbar_created;
 static int      icon_size, interval_sec = 2, last_shown = -9999, light_theme;
 static int      show_usage = 1, last_usage = -9999;
 static int      fan_icon_on;
-static volatile int show_fan = 1;      // 背景執行緒也會看
+static volatile int show_fan = 1, display_off; // 背景執行緒也會看
 static wchar_t  fan_txt[8], fan_tip[64];   // 風扇圖示目前顯示的文字和提示，沒變就不重畫
 static ULONGLONG prev_idle, prev_total;
 static HICON    cur_icon, cur_icon_use, cur_icon_fan;
@@ -328,7 +329,8 @@ static DWORD WINAPI fan_worker(void *arg)
     ULONGLONG give_up = GetTickCount64() + FAN_SEARCH_MS, next_query = 0, last_read = 0;
     DWORD wait = 0, why;
     while ((why = WaitForMultipleObjects(2, events, FALSE, wait)) == WAIT_TIMEOUT || why == WAIT_OBJECT_0 + 1) {
-        if (!show_fan && had_fans) { // 不顯示就不讀，等 UI 執行緒叫醒；還沒找到風扇時要繼續找，選單才有這個開關
+        // 螢幕關閉或不顯示就不讀，等 UI 執行緒叫醒；不顯示但還沒找到風扇時要繼續找，選單才有這個開關
+        if (display_off || (!show_fan && had_fans)) {
             paused = 1;
             wait = INFINITE;
             continue;
@@ -684,6 +686,23 @@ static void start_timer(HWND hwnd)
     SetCoalescableTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL, interval_sec * 100);
 }
 
+// GUID_SESSION_DISPLAY_STATUS；自己定義就不用連結 uuid 函式庫。用 session 版才涵蓋遠端桌面，主控台的螢幕關著也還要更新
+static const GUID display_status_guid = { 0x2b84c20e, 0xad23, 0x4ddf, { 0x93, 0xdb, 0x05, 0xff, 0xbd, 0x7e, 0xfc, 0xa5 } };
+
+// 螢幕關閉時沒人看得到圖示：停止更新和讀取風扇，開啟時馬上補一次
+static void set_display(HWND hwnd, int on)
+{
+    if (on == !display_off) return;
+    display_off = !on;
+    if (on) {
+        start_timer(hwnd);
+        update(0);
+        SetEvent(fan_wake);
+    } else {
+        KillTimer(hwnd, ID_TIMER);
+    }
+}
+
 static void show_menu(HWND hwnd)
 {
     HMENU m = CreatePopupMenu();
@@ -718,6 +737,13 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) show_menu(hwnd);
         else if (LOWORD(lp) == WM_MOUSEMOVE && wp == nid.uID) hover_temp_icon();
         return 0;
+    case WM_POWERBROADCAST:
+        if (wp == PBT_POWERSETTINGCHANGE) {
+            const POWERBROADCAST_SETTING *s = (const POWERBROADCAST_SETTING *)lp;
+            if (!memcmp(&s->PowerSetting, &display_status_guid, sizeof(GUID)) && s->DataLength >= 1)
+                set_display(hwnd, s->Data[0] != 0); // 0 = 關閉、1 = 開啟、2 = 變暗 (還看得到)
+        }
+        return TRUE;
     case WM_SETTINGCHANGE: // 切換淺色/深色工作列時換字色
         if (lp && !lstrcmpW((LPCWSTR)lp, L"ImmersiveColorSet")) { read_theme(); update(1); }
         return 0;
@@ -805,6 +831,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
 
     update(1);
     start_timer(hwnd);
+    RegisterPowerSettingNotification(hwnd, &display_status_guid, DEVICE_NOTIFY_WINDOW_HANDLE); // 註冊後會先收到目前狀態
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); // 釋放啟動時的暫用記憶體
 
     MSG m;

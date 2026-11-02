@@ -310,6 +310,38 @@ static void test_fan_icon_off(HWND hwnd)
     show_fan = 1;
 }
 
+static void send_display_status(HWND hwnd, BYTE status)
+{
+    POWERBROADCAST_SETTING s = { .PowerSetting = display_status_guid, .DataLength = 1, .Data = { status } };
+    wnd_proc(hwnd, WM_POWERBROADCAST, PBT_POWERSETTINGCHANGE, (LPARAM)&s);
+}
+
+static void test_display_off(HWND hwnd)
+{
+    fake_flip = 0;
+    DeleteCriticalSection(&fan_lock);
+    start_fans(hwnd);
+    Sleep(300);
+    start_timer(hwnd);
+
+    send_display_status(hwnd, 2);
+    check("dimmed display keeps updating", !display_off && KillTimer(hwnd, ID_TIMER));
+    start_timer(hwnd);
+
+    send_display_status(hwnd, 0);
+    check("display off stops the timer", display_off && !KillTimer(hwnd, ID_TIMER));
+    Sleep(1200); // 等目前的讀取間隔結束
+    check("no fan reads while the display is off", reads_during(1500) == 0);
+
+    fake_temp = 61;
+    send_display_status(hwnd, 1);
+    check("display on restarts the timer", !display_off && KillTimer(hwnd, ID_TIMER));
+    check("display on updates the tooltip at once", wcsstr(nid.szTip, L"61 °C") != NULL);
+    check("display on reads fans at once", reads_during(300) >= 1);
+
+    stop_fans();
+}
+
 // 安裝後由 smoke test 執行：路徑要真的載入得到 PawnIO。程式本身在 AMD 的 CI runner 上不會載入它，這裡和 CPU 廠牌無關
 static void test_pawnio_installed(void)
 {
@@ -332,6 +364,7 @@ int main(int argc, char **argv)
         test_kick_fans();
         test_fan_worker(hwnd);
         test_fan_icon_off(hwnd);
+        test_display_off(hwnd);
     }
     if (!fails) puts("all app tests passed");
     return fails != 0;
