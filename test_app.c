@@ -27,9 +27,74 @@ static void test_pawnio_path(void)
     check("path too long for the buffer fails", !pawnio_dll_path(tiny, 8));
 }
 
+// 假的 WMI 物件：Next 依序回傳 script 裡的結果，用不到的方法留空
+static HRESULT script[3];
+static int script_pos;
+
+static HRESULT STDMETHODCALLTYPE obj_get(IWbemClassObject *o, LPCWSTR name, LONG flags, VARIANT *v, CIMTYPE *type, LONG *flavor)
+{
+    if (!wcscmp(name, L"__RELPATH")) {
+        V_VT(v) = VT_BSTR;
+        v->bstrVal = SysAllocString(L"fan");
+    } else {
+        V_VT(v) = VT_I4;
+        v->lVal = wcscmp(name, L"CurrentReading") ? 0 : 2000;
+    }
+    return S_OK;
+}
+
+static ULONG STDMETHODCALLTYPE obj_release(IWbemClassObject *o) { return 0; }
+static IWbemClassObjectVtbl obj_vtbl = { .Get = (void *)obj_get, .Release = (void *)obj_release };
+static IWbemClassObject fake_obj = { &obj_vtbl };
+
+static HRESULT STDMETHODCALLTYPE enum_next(IEnumWbemClassObject *e, LONG timeout, ULONG count, IWbemClassObject **objs, ULONG *got)
+{
+    HRESULT hr = script[script_pos++];
+    *got = hr == WBEM_S_NO_ERROR;
+    if (*got) objs[0] = &fake_obj;
+    return hr;
+}
+
+static ULONG STDMETHODCALLTYPE enum_release(IEnumWbemClassObject *e) { return 0; }
+static IEnumWbemClassObjectVtbl enum_vtbl = { .Next = (void *)enum_next, .Release = (void *)enum_release };
+static IEnumWbemClassObject fake_enum = { &enum_vtbl };
+
+static HRESULT STDMETHODCALLTYPE svc_query(IWbemServices *s, const BSTR lang, const BSTR q, LONG flags, IWbemContext *ctx, IEnumWbemClassObject **out)
+{
+    *out = &fake_enum;
+    return S_OK;
+}
+
+static IWbemServicesVtbl svc_vtbl = { .ExecQuery = (void *)svc_query };
+static IWbemServices fake_svc = { &svc_vtbl };
+
+static void query(const char *name, HRESULT a, HRESULT b, HRESULT c, int want, int want_paths)
+{
+    int rpm[MAX_FANS];
+    script[0] = a;
+    script[1] = b;
+    script[2] = c;
+    script_pos = 0;
+    int got = query_fans(&fake_svc, rpm);
+    if (got != want || fan_paths_n != want_paths) {
+        printf("FAIL %s: query_fans = %d with %d paths, want %d with %d\n", name, got, fan_paths_n, want, want_paths);
+        fails++;
+    }
+}
+
+static void test_query_fans(void)
+{
+    query("no fans", WBEM_S_FALSE, 0, 0, 0, 0);
+    query("two fans", WBEM_S_NO_ERROR, WBEM_S_NO_ERROR, WBEM_S_FALSE, 2, 2);
+    query("timeout before any fan", WBEM_S_TIMEDOUT, 0, 0, -1, 0);
+    query("timeout after one fan", WBEM_S_NO_ERROR, WBEM_S_TIMEDOUT, 0, -1, 0);
+    query("failure after one fan", WBEM_S_NO_ERROR, WBEM_E_FAILED, 0, -1, 0);
+}
+
 int main(void)
 {
     test_pawnio_path();
+    test_query_fans();
     if (!fails) puts("all app tests passed");
     return fails != 0;
 }

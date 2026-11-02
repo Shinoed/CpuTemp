@@ -264,7 +264,12 @@ static int query_fans(IWbemServices *svc, int *rpm)
     IEnumWbemClassObject_Release(e);
     fan_paths_n = n;
     if (!paths) clear_fan_paths();      // 有路徑拿不到：之後都用查詢
-    return FAILED(hr) ? -1 : n;
+    // Next 逾時回傳的 WBEM_S_TIMEDOUT 也是成功碼，但可能只列舉到一部分：當成失敗，不留下少了風扇的路徑
+    if (hr != WBEM_S_NO_ERROR && hr != WBEM_S_FALSE) {
+        clear_fan_paths();
+        return -1;
+    }
+    return n;
 }
 
 // 用記下的路徑讀；沒有路徑或任一個讀不到 (風扇不見了、連線斷了) 回傳 -1，由呼叫端改回查詢
