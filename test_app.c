@@ -103,11 +103,12 @@ static void test_query_fans(void)
 }
 
 // 假的 PawnIO：MSR 回傳 fake_temp 對應的讀值
-static int fake_temp = 50;
+static int fake_temp = 50, core_reads;
 
 static HRESULT WINAPI fake_exec(HANDLE h, PCSTR name, const ULONG64 *in, SIZE_T in_n, PULONG64 out, SIZE_T out_n, PSIZE_T got)
 {
-    *out = 0x80000000ULL | ((ULONG64)(tjmax - fake_temp) << 16);
+    if (in[0] == 0x19C) core_reads++;
+    *out =0x80000000ULL | ((ULONG64)(tjmax - fake_temp) << 16);
     *got = 1;
     return S_OK;
 }
@@ -146,6 +147,33 @@ static void test_tooltip_sent_when_changed(HWND hwnd)
     check("forced update is sent", notify_calls == sent + 2);
 }
 
+static void test_cores_read_on_hover(HWND hwnd)
+{
+    hover_until = 0;
+    core_reads = 0;
+    update(0);
+    update(1);
+    check("no core reads without hover", core_reads == 0);
+    check("no core lines without hover", !wcsstr(nid.szTip, L"核心"));
+
+    wnd_proc(hwnd, WM_TRAY, 1, WM_MOUSEMOVE);
+    check("hovering another icon does not read cores", core_reads == 0);
+
+    wnd_proc(hwnd, WM_TRAY, 0, WM_MOUSEMOVE);
+    check("hover reads cores at once", core_reads == ncores);
+    check("hover shows core lines", wcsstr(nid.szTip, L"核心") != NULL);
+
+    wnd_proc(hwnd, WM_TRAY, 0, WM_MOUSEMOVE);
+    check("moving again does not read again", core_reads == ncores);
+    update(0);
+    check("updates during hover read cores", core_reads == 2 * ncores);
+
+    hover_until = 1; // 已過期
+    update(0);
+    check("no core reads after hover", core_reads == 2 * ncores);
+    check("core lines go away after hover", !wcsstr(nid.szTip, L"核心"));
+}
+
 // 安裝後由 smoke test 執行：路徑要真的載入得到 PawnIO。程式本身在 AMD 的 CI runner 上不會載入它，這裡和 CPU 廠牌無關
 static void test_pawnio_installed(void)
 {
@@ -164,6 +192,7 @@ int main(int argc, char **argv)
         test_query_fans();
         HWND hwnd = setup_app();
         test_tooltip_sent_when_changed(hwnd);
+        test_cores_read_on_hover(hwnd);
     }
     if (!fails) puts("all app tests passed");
     return fails != 0;

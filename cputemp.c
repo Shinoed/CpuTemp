@@ -146,6 +146,10 @@ static void read_cores(int *out)
     if (orig) SetThreadAffinityMask(th, orig);
 }
 
+// 核心溫度只有提示文字用得到，而讀它要輪流切到每顆核心 (每顆都會被喚醒)，所以只在滑鼠停在溫度圖示上時讀
+#define HOVER_MS 10000
+static ULONGLONG hover_until;
+
 static ULONGLONG ft64(FILETIME f) { return ((ULONGLONG)f.dwHighDateTime << 32) | f.dwLowDateTime; }
 
 // 兩次取樣之間的 CPU 使用率 (%)；kernel 時間已包含 idle
@@ -581,7 +585,8 @@ static void update(int force)
 
     int t = read_temp();
     int cores[MAX_CORES];
-    if (pio && ncores) read_cores(cores);
+    int hover = GetTickCount64() < hover_until;
+    if (hover && pio && ncores) read_cores(cores);
 
     wchar_t fan[40] = L"";
     int rpm[MAX_FANS], nfans = get_fans(rpm);
@@ -594,7 +599,7 @@ static void update(int force)
     if (t < 0) n = _snwprintf(tip, 128, L"CPU 溫度讀取失敗\n%ls", err_msg);
     else {
         n = _snwprintf(tip, 128, L"CPU 封裝 %d °C  (TjMax %d)", t, tjmax);
-        for (int i = 0; i < ncores && n > 0 && n < 110 - fan_len; i++)
+        for (int i = 0; hover && i < ncores && n > 0 && n < 110 - fan_len; i++)
             n += _snwprintf(tip + n, 128 - n, L"%ls核心%d: %d°C", i % 2 ? L"   " : L"\n", i, cores[i]);
     }
     if (n > 0 && n + fan_len < 128) wcscpy(tip + n, fan);
@@ -620,6 +625,15 @@ static void update(int force)
         nid.uFlags = NIF_TIP;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
+}
+
+// 滑鼠移到溫度圖示上：第一次馬上更新，提示文字跳出來時才有最新的核心溫度
+static void hover_temp_icon(void)
+{
+    ULONGLONG now = GetTickCount64();
+    int first = now >= hover_until;
+    hover_until = now + HOVER_MS;
+    if (first) update(0);
 }
 
 // 容許延後一成，讓系統把這次喚醒和其他工作排在一起
@@ -660,6 +674,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_TRAY:
         if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) show_menu(hwnd);
+        else if (LOWORD(lp) == WM_MOUSEMOVE && wp == nid.uID) hover_temp_icon();
         return 0;
     case WM_SETTINGCHANGE: // 切換淺色/深色工作列時換字色
         if (lp && !lstrcmpW((LPCWSTR)lp, L"ImmersiveColorSet")) { read_theme(); update(1); }

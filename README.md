@@ -47,7 +47,7 @@ CpuTemp_Setup_<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 |---|---|
 | `IA32_TEMPERATURE_TARGET` (0x1A2) | bits 23:16 = TjMax |
 | `IA32_PACKAGE_THERM_STATUS` (0x1B1) | bits 22:16 = 封裝距 TjMax 的度數 |
-| `IA32_THERM_STATUS` (0x19C) | bits 22:16 = 各核心距 TjMax 的度數 (逐核心切換執行緒親和性讀取) |
+| `IA32_THERM_STATUS` (0x19C) | bits 22:16 = 各核心距 TjMax 的度數 (要逐核心切換執行緒親和性，所以只在滑鼠停在溫度圖示上時讀) |
 
 讀取 MSR 需要系統管理員權限，因此程式以 `requireAdministrator` 執行，開機自動啟動透過「登入時以最高權限執行」的排程工作。
 
