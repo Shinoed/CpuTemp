@@ -88,6 +88,10 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           .\test_fan.exe
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          gcc -std=c11 -Wall -Wno-unused-function -o test_app.exe test_app.c -luser32 -lgdi32 -lshell32 -ladvapi32 -limm32 -lole32 -loleaut32 -lwbemuuid
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\test_app.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           gcc -std=c11 -Wall -Wno-unused-function -o test_icons.exe test_icons.c -luser32 -lgdi32 -lshell32 -ladvapi32 -limm32 -lole32 -loleaut32 -lwbemuuid
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force icon-previews | Out-Null
