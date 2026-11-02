@@ -9,6 +9,7 @@
 #ifndef UNICODE
 #define UNICODE
 #endif
+#define _WIN32_WINNT 0x0A00 // 安裝程式也只支援 Windows 10 以上
 #include <windows.h>
 #include <shellapi.h>
 #include <imm.h>
@@ -616,6 +617,12 @@ static void update(int force)
     }
 }
 
+// 容許延後一成，讓系統把這次喚醒和其他工作排在一起
+static void start_timer(HWND hwnd)
+{
+    SetCoalescableTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL, interval_sec * 100);
+}
+
 static void show_menu(HWND hwnd)
 {
     HMENU m = CreatePopupMenu();
@@ -672,7 +679,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (LOWORD(wp) > ID_INTERVAL && valid_interval(LOWORD(wp) - ID_INTERVAL)) {
             interval_sec = LOWORD(wp) - ID_INTERVAL;
             reg_set(L"Interval", interval_sec);
-            SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
+            start_timer(hwnd);
         }
         return 0;
     case WM_DESTROY:
@@ -734,7 +741,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     start_fans(hwnd);
 
     update(1);
-    SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
+    start_timer(hwnd);
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); // 釋放啟動時的暫用記憶體
 
     MSG m;
