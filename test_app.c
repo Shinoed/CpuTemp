@@ -290,14 +290,18 @@ static void test_fan_icon_off(HWND hwnd)
     fake_flip = 0;
     show_fan = 0;
     DeleteCriticalSection(&fan_lock);
+    LONG before = wmi_reads; // 背景執行緒可能馬上就讀完，要在叫醒之前先記下
     start_fans(hwnd);
-    check("fans are found once while the icon is off", reads_during(1500) == 1);
+    Sleep(1500);
+    check("fans are found once while the icon is off", wmi_reads - before == 1);
     check("the menu knows about the fans", get_fans(rpm) == 1);
     update(0);
     check("no fan line while the icon is off", !wcsstr(nid.szTip, L"風扇"));
 
+    before = wmi_reads;
     wnd_proc(hwnd, WM_COMMAND, ID_FAN, 0);
-    check("turning the icon on reads at once", show_fan && reads_during(300) >= 1);
+    Sleep(300);
+    check("turning the icon on reads at once", show_fan && wmi_reads > before);
     update(0);
     check("fan line comes back", wcsstr(nid.szTip, L"風扇") != NULL);
 
@@ -334,10 +338,12 @@ static void test_display_off(HWND hwnd)
     check("no fan reads while the display is off", reads_during(1500) == 0);
 
     fake_temp = 61;
+    LONG before = wmi_reads;
     send_display_status(hwnd, 1);
     check("display on restarts the timer", !display_off && KillTimer(hwnd, ID_TIMER));
     check("display on updates the tooltip at once", wcsstr(nid.szTip, L"61 °C") != NULL);
-    check("display on reads fans at once", reads_during(300) >= 1);
+    Sleep(300);
+    check("display on reads fans at once", wmi_reads > before);
 
     stop_fans();
 }
