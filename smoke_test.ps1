@@ -184,19 +184,19 @@ function SetFan1($rpm) {
 }
 # Dell Command | Monitor reports a stopped fan as a NULL reading, not 0
 SetFan1 $null
-Check 'stopped fan (NULL reading) shows 0 RPM' (WaitFor { [Native]::Tooltip() -match '風扇 (0 / 1800|1800 / 0) RPM' } 25) "(got '$([Native]::Tooltip())')"
+Check 'stopped fan (NULL reading) shows 0 RPM' (WaitFor { [Native]::Tooltip() -match '風扇 (0 / 1800|1800 / 0) RPM' } 45) "(got '$([Native]::Tooltip())')"
 
 SetFan1 3100
 Command (200 + 1) | Out-Null
 Check 'interval 1 s is saved' (WaitFor { (RegValue Interval) -eq 1 }) "(got $(RegValue Interval))"
-Check 'fan speed updates' (WaitFor { [Native]::Tooltip() -match '3100' } 25) "(got '$([Native]::Tooltip())')"
+Check 'fan speed updates' (WaitFor { [Native]::Tooltip() -match '3100' } 45) "(got '$([Native]::Tooltip())')"
 
 # WMI queries run off the UI thread: the window answers at once while fans are polled
 $pings = 1..20 | ForEach-Object { [Native]::Ping(); Start-Sleep -Milliseconds 250 }
 $slowest = ($pings | Measure-Object -Maximum).Maximum
 Check 'UI thread responsive while polling fans' (($pings -notcontains -1) -and $slowest -lt 300) "(slowest $slowest ms; $($pings -join ','))"
 
-# fans are read every 10 s; committed memory must not keep growing
+# fans are read every 10 to 30 s; committed memory must not keep growing
 $m1 = Memory 'fans, after 5 s'
 Start-Sleep 40
 $m2 = Memory 'fans, after 45 s'
@@ -218,7 +218,7 @@ Check 'still running after WMI restarts' (Running)
 # Dell Command | Monitor removed: "--" for 3 minutes, then the icon goes away (the fan
 # toggle is ignored again); reinstalled later: fans come back within a minute
 Get-CimInstance -Namespace root -ClassName __Namespace -Filter "Name='dcim'" | Remove-CimInstance
-Check 'fan line leaves the tooltip when fans are gone' (WaitFor { [Native]::Tooltip() -notmatch '風扇' } 30) "(got '$([Native]::Tooltip())')"
+Check 'fan line leaves the tooltip when fans are gone' (WaitFor { [Native]::Tooltip() -notmatch '風扇' } 45) "(got '$([Native]::Tooltip())')"
 Start-Sleep 200
 Command 102 | Out-Null
 Start-Sleep 1

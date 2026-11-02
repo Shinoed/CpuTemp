@@ -3,6 +3,7 @@
 #include <wchar.h>
 
 #define MAX_FANS 4
+#define FAN_STABLE_RPM 100 // 和上次差不到這麼多算穩定 (圖示只顯示到 100 RPM)
 
 // DCIM_NumericSensor 的讀值 = CurrentReading × 10^UnitModifier；讀值不合理時回傳 -1
 static int fan_rpm(long reading, long modifier)
@@ -12,6 +13,17 @@ static int fan_rpm(long reading, long modifier)
     for (; modifier > 0; modifier--) v *= 10;
     for (; modifier < 0; modifier++) v /= 10;
     return v > 100000 ? -1 : (int)v;
+}
+
+// 轉速是否穩定：風扇數相同，每個風扇都和上次差不到 FAN_STABLE_RPM
+static int fan_stable(const int *prev, int prev_count, const int *rpm, int count)
+{
+    if (prev_count != count) return 0;
+    for (int i = 0; i < count; i++) {
+        int d = prev[i] - rpm[i];
+        if (d <= -FAN_STABLE_RPM || d >= FAN_STABLE_RPM) return 0;
+    }
+    return 1;
 }
 
 // 工作列圖示的文字：以千 RPM 為單位、一位小數 ("2.7")，1 萬以上取整數 ("12")；停止 "0"、讀不到 "--"

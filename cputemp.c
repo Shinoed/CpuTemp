@@ -180,13 +180,19 @@ static int read_usage(void)
 #define FAN_RETRY_MS   15000
 #define FAN_SEARCH_MS  (3 * 60 * 1000)
 #define FAN_IDLE_MS    60000
-#define FAN_RESCAN     30             // 用路徑讀幾次後重新查詢 (約 5 分鐘)
-#define FAN_PERIOD_MS  10000          // 有風扇時的讀取間隔：DCM 查詢很重，2 秒一次讓 WmiPrvSE 多用一個核心約 12~21% (實測)
+#define FAN_RESCAN_MS  (5 * 60 * 1000) // 用路徑讀多久後重新查詢
+#define FAN_KICK_DEG   3              // 封裝溫度比近期低點高這麼多度就提早讀
+// 有風扇時的讀取間隔：DCM 查詢很重，2 秒一次讓 WmiPrvSE 多用一個核心約 12~21% (實測)。
+// 轉速穩定時拉長；溫度上升會提早讀，但不會比 FAN_PERIOD_MS 更頻繁 (test_app.c 會改短)
+#ifndef FAN_PERIOD_MS
+#define FAN_PERIOD_MS  10000
+#define FAN_SLOW_MS    30000
+#endif
 
 static CRITICAL_SECTION fan_lock;
 static int      fan_state = -1;        // -1 = 沒有風扇感應器、0 = 曾經有但暫時讀不到、>0 = 風扇數
 static int      fan_rpms[MAX_FANS];    // fan_state > 0 時有效；以上兩個都受 fan_lock 保護
-static HANDLE   fan_thread, fan_stop;
+static HANDLE   fan_thread, fan_stop, fan_wake;
 static HWND     main_hwnd;
 
 static IWbemServices *wmi_connect(void)
@@ -290,7 +296,7 @@ static int reget_fans(IWbemServices *svc, int *rpm)
     return fan_paths_n;
 }
 
-// 每 FAN_RESCAN 次讀取重新查詢一次，風扇數量變了也找得到
+// 定期重新查詢一次，風扇數量變了也找得到
 static int read_fans(IWbemServices *svc, int *rpm, int fresh)
 {
     int n = fresh ? -1 : reget_fans(svc, rpm);
@@ -316,25 +322,36 @@ static DWORD WINAPI fan_worker(void *arg)
     CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
 
     IWbemServices *svc = NULL;
-    int had_fans = 0;
-    ULONGLONG give_up = GetTickCount64() + FAN_SEARCH_MS;
-    DWORD wait = 0;
-    int reads = 0;
-    while (WaitForSingleObject(fan_stop, wait) == WAIT_TIMEOUT) {
-        int rpm[MAX_FANS], n = -1;
+    HANDLE events[] = { fan_stop, fan_wake };
+    int had_fans = 0, prev[MAX_FANS], prev_n = 0;
+    ULONGLONG give_up = GetTickCount64() + FAN_SEARCH_MS, next_query = 0, last_read = 0;
+    DWORD wait = 0, why;
+    while ((why = WaitForMultipleObjects(2, events, FALSE, wait)) == WAIT_TIMEOUT || why == WAIT_OBJECT_0 + 1) {
+        ULONGLONG now = GetTickCount64();
+        if (why != WAIT_TIMEOUT && now - last_read < FAN_PERIOD_MS) { // 被叫醒也要維持最短間隔
+            wait = (DWORD)(last_read + FAN_PERIOD_MS - now);
+            continue;
+        }
+        last_read = now;
+
+        int rpm[MAX_FANS], n = -1, fresh = now >= next_query;
         if (!svc) svc = wmi_connect();
-        if (svc && (n = read_fans(svc, rpm, reads++ % FAN_RESCAN == 0)) < 0) { // 連線斷了 (例如 WMI 服務重啟)：丟掉，下一輪重連
+        if (svc && (n = read_fans(svc, rpm, fresh)) < 0) { // 連線斷了 (例如 WMI 服務重啟)：丟掉，下一輪重連
             IWbemServices_Release(svc);
             svc = NULL;
         }
         if (n > 0) {
+            if (fresh) next_query = now + FAN_RESCAN_MS;
             had_fans = 1;
-            give_up = GetTickCount64() + FAN_SEARCH_MS;
+            give_up = now + FAN_SEARCH_MS;
             publish_fans(n, rpm);
-            wait = FAN_PERIOD_MS;
+            wait = fan_stable(prev, prev_n, rpm, n) ? FAN_SLOW_MS : FAN_PERIOD_MS;
+            prev_n = n;
+            for (int i = 0; i < n; i++) prev[i] = rpm[i];
             continue;
         }
-        if (GetTickCount64() < give_up) {
+        prev_n = 0;
+        if (now < give_up) {
             if (had_fans) publish_fans(0, rpm); // 剛讀不到：圖示留著顯示 "--"，很快重試
             wait = FAN_RETRY_MS;
         } else {
@@ -354,6 +371,7 @@ static void start_fans(HWND hwnd)
     main_hwnd = hwnd;
     InitializeCriticalSection(&fan_lock);
     fan_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    fan_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     // 只做 WMI 查詢，不需要預設的 1 MB 堆疊
     fan_thread = CreateThread(NULL, 256 * 1024, fan_worker, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
 }
@@ -578,6 +596,18 @@ static void update_fan(int force)
     if (old) DestroyIcon(old);
 }
 
+// 溫度比近期低點高 FAN_KICK_DEG 度就叫背景執行緒提早讀：風扇很可能正要加速，穩定時的讀取間隔又比較長
+static void kick_fans(int t)
+{
+    static int low = 9999;
+    if (t < 0) return;
+    if (t < low) low = t;
+    else if (t >= low + FAN_KICK_DEG) {
+        low = t;
+        SetEvent(fan_wake);
+    }
+}
+
 static void update(int force)
 {
     update_usage(force);
@@ -590,7 +620,8 @@ static void update(int force)
 
     wchar_t fan[40] = L"";
     int rpm[MAX_FANS], nfans = get_fans(rpm);
-    int fan_len = nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
+    if (nfans > 0) kick_fans(t);
+    int fan_len =nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
     if (fan_len) fan[0] = L'\n', fan_len++;
 
     // 提示文字沒變就不送給 Explorer (跨行程)，圖示只有封裝溫度變了才重畫；風扇那行留在最後

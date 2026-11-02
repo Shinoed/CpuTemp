@@ -10,6 +10,17 @@ static int notify_calls;
 static BOOL fake_notify(DWORD msg, NOTIFYICONDATAW *data) { notify_calls++; return TRUE; }
 #define Shell_NotifyIconW fake_notify
 
+// 換掉 WMI 連線，背景執行緒才能跑假的物件；讀取間隔也改短，測試不必等那麼久
+#define COBJMACROS
+#include <objbase.h>
+#include <wbemidl.h>
+static HRESULT fake_create(const void *c, void *o, DWORD ctx, const void *iid, void **out);
+static HRESULT fake_blanket(void *u, DWORD a, DWORD b, void *c, DWORD d, DWORD e, void *f, DWORD g);
+#define CoCreateInstance fake_create
+#define CoSetProxyBlanket fake_blanket
+#define FAN_PERIOD_MS 200
+#define FAN_SLOW_MS 1000
+
 #define wWinMain cputemp_main // 只要內部函式，不要程式進入點
 #include "cputemp.c"
 #include <stdio.h>
@@ -40,16 +51,23 @@ static void test_pawnio_path(void)
 
 // 假的 WMI 物件：Next 依序回傳 script 裡的結果，用不到的方法留空
 static HRESULT script[3];
-static int script_pos;
+static int script_pos, fake_rpm = 2000;
+static volatile int fake_flip;  // 每次讀值都變，轉速就不穩定
+static volatile LONG wmi_reads;
 
 static HRESULT STDMETHODCALLTYPE obj_get(IWbemClassObject *o, LPCWSTR name, LONG flags, VARIANT *v, CIMTYPE *type, LONG *flavor)
 {
     if (!wcscmp(name, L"__RELPATH")) {
         V_VT(v) = VT_BSTR;
         v->bstrVal = SysAllocString(L"fan");
+    } else if (!wcscmp(name, L"CurrentReading")) {
+        if (fake_flip) fake_rpm = fake_rpm == 2000 ? 3000 : 2000;
+        else fake_rpm = 2000;
+        V_VT(v) = VT_I4;
+        v->lVal = fake_rpm;
     } else {
         V_VT(v) = VT_I4;
-        v->lVal = wcscmp(name, L"CurrentReading") ? 0 : 2000;
+        v->lVal = 0;
     }
     return S_OK;
 }
@@ -72,12 +90,40 @@ static IEnumWbemClassObject fake_enum = { &enum_vtbl };
 
 static HRESULT STDMETHODCALLTYPE svc_query(IWbemServices *s, const BSTR lang, const BSTR q, LONG flags, IWbemContext *ctx, IEnumWbemClassObject **out)
 {
+    InterlockedIncrement(&wmi_reads);
+    script_pos = 0;
     *out = &fake_enum;
     return S_OK;
 }
 
-static IWbemServicesVtbl svc_vtbl = { .ExecQuery = (void *)svc_query };
+static HRESULT STDMETHODCALLTYPE svc_get(IWbemServices *s, const BSTR path, LONG flags, IWbemContext *ctx, IWbemClassObject **out, IWbemCallResult **result)
+{
+    InterlockedIncrement(&wmi_reads);
+    *out = &fake_obj;
+    return S_OK;
+}
+
+static ULONG STDMETHODCALLTYPE svc_release(IWbemServices *s) { return 0; }
+static IWbemServicesVtbl svc_vtbl = { .GetObject = (void *)svc_get, .ExecQuery = (void *)svc_query, .Release = (void *)svc_release };
 static IWbemServices fake_svc = { &svc_vtbl };
+
+static HRESULT STDMETHODCALLTYPE loc_connect(IWbemLocator *l, BSTR a, BSTR b, BSTR c, BSTR d, LONG e, BSTR f, IWbemContext *g, IWbemServices **out)
+{
+    *out = &fake_svc;
+    return S_OK;
+}
+
+static ULONG STDMETHODCALLTYPE loc_release(IWbemLocator *l) { return 0; }
+static IWbemLocatorVtbl loc_vtbl = { .ConnectServer = (void *)loc_connect, .Release = (void *)loc_release };
+static IWbemLocator fake_loc = { &loc_vtbl };
+
+static HRESULT fake_create(const void *c, void *o, DWORD ctx, const void *iid, void **out)
+{
+    *out = &fake_loc;
+    return S_OK;
+}
+
+static HRESULT fake_blanket(void *u, DWORD a, DWORD b, void *c, DWORD d, DWORD e, void *f, DWORD g) { return S_OK; }
 
 static void query(const char *name, HRESULT a, HRESULT b, HRESULT c, int want, int want_paths)
 {
@@ -85,7 +131,6 @@ static void query(const char *name, HRESULT a, HRESULT b, HRESULT c, int want, i
     script[0] = a;
     script[1] = b;
     script[2] = c;
-    script_pos = 0;
     int got = query_fans(&fake_svc, rpm);
     if (got != want || fan_paths_n != want_paths) {
         printf("FAIL %s: query_fans = %d with %d paths, want %d with %d\n", name, got, fan_paths_n, want, want_paths);
@@ -108,7 +153,7 @@ static int fake_temp = 50, core_reads;
 static HRESULT WINAPI fake_exec(HANDLE h, PCSTR name, const ULONG64 *in, SIZE_T in_n, PULONG64 out, SIZE_T out_n, PSIZE_T got)
 {
     if (in[0] == 0x19C) core_reads++;
-    *out =0x80000000ULL | ((ULONG64)(tjmax - fake_temp) << 16);
+    *out = 0x80000000ULL | ((ULONG64)(tjmax - fake_temp) << 16);
     *got = 1;
     return S_OK;
 }
@@ -174,6 +219,67 @@ static void test_cores_read_on_hover(HWND hwnd)
     check("core lines go away after hover", !wcsstr(nid.szTip, L"核心"));
 }
 
+static void test_kick_fans(void)
+{
+    fan_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+    fan_state = 1;
+    fan_rpms[0] = 2000;
+    fake_temp = 50;
+    update(0);
+    fake_temp = 52;
+    update(0);
+    check("small rise does not kick", WaitForSingleObject(fan_wake, 0) == WAIT_TIMEOUT);
+    fake_temp = 53;
+    update(0);
+    check("rise of 3 degrees kicks", WaitForSingleObject(fan_wake, 0) == WAIT_OBJECT_0);
+    fake_temp = 50;
+    update(0);
+    check("falling does not kick", WaitForSingleObject(fan_wake, 0) == WAIT_TIMEOUT);
+    fake_temp = 53;
+    update(0);
+    check("rise from the new low kicks", WaitForSingleObject(fan_wake, 0) == WAIT_OBJECT_0);
+    fan_state = -1;
+    fake_temp = 70;
+    update(0);
+    check("no kick without fans", WaitForSingleObject(fan_wake, 0) == WAIT_TIMEOUT);
+    CloseHandle(fan_wake);
+}
+
+static int reads_during(int ms)
+{
+    LONG before = wmi_reads;
+    Sleep(ms);
+    return wmi_reads - before;
+}
+
+// 跑真正的背景執行緒；間隔在這個檔案開頭改成 200 / 1000 ms
+static void test_fan_worker(HWND hwnd)
+{
+    script[0] = WBEM_S_NO_ERROR;
+    script[1] = WBEM_S_FALSE;
+    DeleteCriticalSection(&fan_lock);
+
+    fake_flip = 1;
+    start_fans(hwnd);
+    check("changing fans are read at the short interval", reads_during(1000) >= 3);
+
+    fake_flip = 0;
+    Sleep(500);
+    check("stable fans are read at the long interval", reads_during(1500) <= 2);
+
+    LONG before = wmi_reads;
+    ULONGLONG end = GetTickCount64() + 1000;
+    while (GetTickCount64() < end) {
+        SetEvent(fan_wake);
+        Sleep(10);
+    }
+    int kicked = wmi_reads - before;
+    check("kicks read early", kicked >= 3);
+    check("kicks keep the minimum interval", kicked <= 7);
+
+    stop_fans();
+}
+
 // 安裝後由 smoke test 執行：路徑要真的載入得到 PawnIO。程式本身在 AMD 的 CI runner 上不會載入它，這裡和 CPU 廠牌無關
 static void test_pawnio_installed(void)
 {
@@ -193,6 +299,8 @@ int main(int argc, char **argv)
         HWND hwnd = setup_app();
         test_tooltip_sent_when_changed(hwnd);
         test_cores_read_on_hover(hwnd);
+        test_kick_fans();
+        test_fan_worker(hwnd);
     }
     if (!fails) puts("all app tests passed");
     return fails != 0;
