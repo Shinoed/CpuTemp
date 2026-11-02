@@ -1,4 +1,15 @@
 // test_app.c - cputemp.c 內部函式的單元測試；失敗時回傳非 0
+#define WIN32_LEAN_AND_MEAN
+#define UNICODE
+#define _WIN32_WINNT 0x0A00
+#include <windows.h>
+#include <shellapi.h>
+
+// 換掉送給 Explorer 的呼叫，才數得到次數
+static int notify_calls;
+static BOOL fake_notify(DWORD msg, NOTIFYICONDATAW *data) { notify_calls++; return TRUE; }
+#define Shell_NotifyIconW fake_notify
+
 #define wWinMain cputemp_main // 只要內部函式，不要程式進入點
 #include "cputemp.c"
 #include <stdio.h>
@@ -91,6 +102,50 @@ static void test_query_fans(void)
     query("failure after one fan", WBEM_S_NO_ERROR, WBEM_E_FAILED, 0, -1, 0);
 }
 
+// 假的 PawnIO：MSR 回傳 fake_temp 對應的讀值
+static int fake_temp = 50;
+
+static HRESULT WINAPI fake_exec(HANDLE h, PCSTR name, const ULONG64 *in, SIZE_T in_n, PULONG64 out, SIZE_T out_n, PSIZE_T got)
+{
+    *out = 0x80000000ULL | ((ULONG64)(tjmax - fake_temp) << 16);
+    *got = 1;
+    return S_OK;
+}
+
+// 不用真的驅動就能跑 update()
+static HWND setup_app(void)
+{
+    HWND hwnd = CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 0, 0, NULL, NULL, GetModuleHandleW(NULL), NULL);
+    p_exec = fake_exec;
+    pio = (HANDLE)1;
+    tjmax = 100;
+    ncores = 2;
+    core_mask[0] = core_mask[1] = 1;
+    show_usage = 0;
+    nid.hWnd = hwnd;
+    InitializeCriticalSection(&fan_lock);
+    init_icon_canvas(16);
+    return hwnd;
+}
+
+static void test_tooltip_sent_when_changed(HWND hwnd)
+{
+    wchar_t title[128];
+    fake_temp = 50;
+    update(1);
+    int sent = notify_calls;
+    update(0);
+    update(0);
+    check("same tooltip is not sent again", notify_calls == sent);
+    fake_temp = 51;
+    update(0);
+    check("changed tooltip is sent once", notify_calls == sent + 1);
+    GetWindowTextW(hwnd, title, 128);
+    check("window title mirrors the tooltip", !wcscmp(title, nid.szTip));
+    update(1);
+    check("forced update is sent", notify_calls == sent + 2);
+}
+
 // 安裝後由 smoke test 執行：路徑要真的載入得到 PawnIO。程式本身在 AMD 的 CI runner 上不會載入它，這裡和 CPU 廠牌無關
 static void test_pawnio_installed(void)
 {
@@ -107,6 +162,8 @@ int main(int argc, char **argv)
     else {
         test_pawnio_path();
         test_query_fans();
+        HWND hwnd = setup_app();
+        test_tooltip_sent_when_changed(hwnd);
     }
     if (!fails) puts("all app tests passed");
     return fails != 0;

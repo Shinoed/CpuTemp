@@ -588,18 +588,22 @@ static void update(int force)
     int fan_len = nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
     if (fan_len) fan[0] = L'\n', fan_len++;
 
-    // 提示文字每次都更新 (核心溫度會變)，圖示只有封裝溫度變了才重畫；風扇那行留在最後
+    // 提示文字沒變就不送給 Explorer (跨行程)，圖示只有封裝溫度變了才重畫；風扇那行留在最後
+    wchar_t tip[128];
     int n;
-    if (t < 0) n = _snwprintf(nid.szTip, 128, L"CPU 溫度讀取失敗\n%ls", err_msg);
+    if (t < 0) n = _snwprintf(tip, 128, L"CPU 溫度讀取失敗\n%ls", err_msg);
     else {
-        n = _snwprintf(nid.szTip, 128, L"CPU 封裝 %d °C  (TjMax %d)", t, tjmax);
+        n = _snwprintf(tip, 128, L"CPU 封裝 %d °C  (TjMax %d)", t, tjmax);
         for (int i = 0; i < ncores && n > 0 && n < 110 - fan_len; i++)
-            n += _snwprintf(nid.szTip + n, 128 - n, L"%ls核心%d: %d°C", i % 2 ? L"   " : L"\n", i, cores[i]);
+            n += _snwprintf(tip + n, 128 - n, L"%ls核心%d: %d°C", i % 2 ? L"   " : L"\n", i, cores[i]);
     }
-    if (n > 0 && n + fan_len < 128) wcscpy(nid.szTip + n, fan);
-    nid.szTip[127] = 0;
-    SetWindowTextW(nid.hWnd, nid.szTip); // 隱藏視窗的標題 = 提示文字，讓自動測試讀得到
-    nid.uFlags = NIF_TIP;
+    if (n > 0 && n + fan_len < 128) wcscpy(tip + n, fan);
+    tip[127] = 0;
+    int tip_changed = wcscmp(tip, nid.szTip) != 0;
+    if (tip_changed) {
+        wcscpy(nid.szTip, tip);
+        SetWindowTextW(nid.hWnd, tip); // 隱藏視窗的標題 = 提示文字，讓自動測試讀得到
+    }
 
     if (t != last_shown || force) {
         last_shown = t;
@@ -609,10 +613,11 @@ static void update(int force)
         HICON old = cur_icon;
         cur_icon = make_icon(txt, temp_color(t), -1);
         nid.hIcon = cur_icon;
-        nid.uFlags |= NIF_ICON;
+        nid.uFlags = NIF_TIP | NIF_ICON;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
         if (old) DestroyIcon(old);
-    } else {
+    } else if (tip_changed) {
+        nid.uFlags = NIF_TIP;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 }
