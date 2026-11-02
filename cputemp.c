@@ -671,10 +671,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     case WM_DESTROY:
-        stop_fans();
         Shell_NotifyIconW(NIM_DELETE, &nid);
         Shell_NotifyIconW(NIM_DELETE, &nid_use);
         if (fan_icon_on) Shell_NotifyIconW(NIM_DELETE, &nid_fan);
+        stop_fans(); // 最多等 5 秒，安裝和解除安裝只等約 3 秒就強制結束，所以圖示要先移除才不會殘留
         if (pio) p_close(pio);
         PostQuitMessage(0);
         return 0;
