@@ -236,8 +236,20 @@ foreach ($step in @{ Name = 'pawnio'; Code = 10 }, @{ Name = 'task'; Code = 11 }
 }
 Stop-Process -Name CpuTempNative -Force -ErrorAction SilentlyContinue
 
-# --- Uninstall
-& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$App\uninstall.ps1" -Quiet
+# --- Uninstall. It runs elevated, so a decoy folder named by the environment must be ignored:
+# %ProgramFiles% of a 64-bit process comes from ProgramW6432
+$decoy = Join-Path $env:TEMP 'fake_program_files'
+New-Item "$decoy\CpuTemp" -ItemType Directory -Force | Out-Null
+Set-Content "$decoy\CpuTemp\keep.txt" 'keep'
+$realPf = $env:ProgramW6432
+$env:ProgramW6432 = $decoy
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$App\uninstall.ps1" -Quiet -RemovePawnIO
+$code = $LASTEXITCODE
+$env:ProgramW6432 = $realPf
+Get-Content "$env:TEMP\CpuTemp_uninstall.log" | ForEach-Object { Write-Host "LOG   $_" }
+Check 'uninstall exits with 0' ($code -eq 0) "(got $code)"
+Check 'uninstall ignores a faked %ProgramFiles%' (Test-Path "$decoy\CpuTemp\keep.txt")
+Check 'PawnIO removed' (WaitFor { -not (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO') } 30)
 Check 'Settings > Apps entry removed' (WaitFor { -not (Test-Path $Arp) } 30)
 Check 'program folder removed' (WaitFor { -not (Test-Path $Exe) } 30)
 Check 'logon task removed' (-not (Get-ScheduledTask CpuTempTray -ErrorAction SilentlyContinue))
