@@ -111,6 +111,8 @@ Check "Settings > Apps publisher is $Publisher" ($arp.Publisher -eq $Publisher) 
 Check "Settings > Apps version is $Version" ($arp.DisplayVersion -eq $Version) "(got '$($arp.DisplayVersion)')"
 Check 'Settings > Apps icon is the exe' ($arp.DisplayIcon -eq $Exe) "(got '$($arp.DisplayIcon)')"
 Check 'PawnIO installed' (Test-Path "$env:ProgramFiles\PawnIO\PawnIOLib.dll")
+.\test_app.exe installed       # built by the unit test step
+Check 'app path loads the installed PawnIO DLL' ($LASTEXITCODE -eq 0) "(exit $LASTEXITCODE)"
 Check 'logon task registered' ([bool](Get-ScheduledTask CpuTempTray -ErrorAction SilentlyContinue))
 
 # --- Running app. The logon task may not start without an interactive session,
@@ -139,6 +141,7 @@ Start-Sleep 2
 Check 'only one instance runs' (@(Get-Process CpuTempNative -ErrorAction SilentlyContinue).Count -eq 1)
 
 Check 'tooltip is set' (WaitFor { [Native]::Tooltip() -like 'CPU*' }) "(got '$([Native]::Tooltip())')"
+Write-Host "INFO  CPU $((Get-CimInstance Win32_Processor).Manufacturer), tooltip '$([Native]::Tooltip())'"
 Check 'PawnIO DLL found' ([Native]::Tooltip() -notmatch '找不到 PawnIO') "(got '$([Native]::Tooltip())')" # AMD runners stop at the CPU check before loading it
 $m0 = Memory 'no fans'
 Check 'private working set under 3 MB without fans' ($m0.PrivateWS -lt 3) "($([math]::Round($m0.PrivateWS, 2)) MB)"

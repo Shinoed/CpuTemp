@@ -91,10 +91,23 @@ static void test_query_fans(void)
     query("failure after one fan", WBEM_S_NO_ERROR, WBEM_E_FAILED, 0, -1, 0);
 }
 
-int main(void)
+// 安裝後由 smoke test 執行：路徑要真的載入得到 PawnIO。程式本身在 AMD 的 CI runner 上不會載入它，這裡和 CPU 廠牌無關
+static void test_pawnio_installed(void)
 {
-    test_pawnio_path();
-    test_query_fans();
+    wchar_t path[MAX_PATH];
+    check("path found", pawnio_dll_path(path, MAX_PATH));
+    HMODULE lib = LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    check("PawnIOLib.dll loads", lib != NULL);
+    check("PawnIOLib.dll has pawnio_open", lib && GetProcAddress(lib, "pawnio_open"));
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1) test_pawnio_installed(); // test_app.exe installed
+    else {
+        test_pawnio_path();
+        test_query_fans();
+    }
     if (!fails) puts("all app tests passed");
     return fails != 0;
 }
