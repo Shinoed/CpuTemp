@@ -51,6 +51,13 @@ int main(void)
         fails++;
     }
 
+    int s1[] = { 2000, 0 }, s2[] = { 2099, 0 }, s3[] = { 2100, 0 }, s4[] = { 1901, 0 }, s5[] = { 1900, 0 };
+    if (!fan_stable(s1, 2, s1, 2) || !fan_stable(s1, 2, s2, 2) || fan_stable(s1, 2, s3, 2) ||
+        !fan_stable(s1, 2, s4, 2) || fan_stable(s1, 2, s5, 2) || fan_stable(s1, 1, s1, 2) || fan_stable(s1, 0, s1, 1)) {
+        puts("FAIL fan_stable");
+        fails++;
+    }
+
     rpm(2345, 0, 2345);
     rpm(0, 0, 0);                  // 風扇停止
     rpm(234, 1, 2340);             // 以 10 RPM 為單位回報

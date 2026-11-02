@@ -9,10 +9,12 @@
 #ifndef UNICODE
 #define UNICODE
 #endif
+#define _WIN32_WINNT 0x0A00 // 安裝程式也只支援 Windows 10 以上
 #include <windows.h>
 #include <shellapi.h>
 #include <imm.h>
 #include <wchar.h>
+#include <string.h>
 #define COBJMACROS
 #include <objbase.h>
 #include <wbemidl.h>
@@ -55,7 +57,8 @@ static NOTIFYICONDATAW nid, nid_use, nid_fan;  // 溫度 / CPU 使用率 / 風�
 static UINT     wm_taskbar_created;
 static int      icon_size, interval_sec = 2, last_shown = -9999, light_theme;
 static int      show_usage = 1, last_usage = -9999;
-static int      show_fan = 1, fan_icon_on;
+static int      fan_icon_on;
+static volatile int show_fan = 1, display_off; // 背景執行緒也會看
 static wchar_t  fan_txt[8], fan_tip[64];   // 風扇圖示目前顯示的文字和提示，沒變就不重畫
 static ULONGLONG prev_idle, prev_total;
 static HICON    cur_icon, cur_icon_use, cur_icon_fan;
@@ -145,6 +148,10 @@ static void read_cores(int *out)
     if (orig) SetThreadAffinityMask(th, orig);
 }
 
+// 核心溫度只有提示文字用得到，而讀它要輪流切到每顆核心 (每顆都會被喚醒)，所以只在滑鼠停在溫度圖示上時讀
+#define HOVER_MS 10000
+static ULONGLONG hover_until;
+
 static ULONGLONG ft64(FILETIME f) { return ((ULONGLONG)f.dwHighDateTime << 32) | f.dwLowDateTime; }
 
 // 兩次取樣之間的 CPU 使用率 (%)；kernel 時間已包含 idle
@@ -175,13 +182,19 @@ static int read_usage(void)
 #define FAN_RETRY_MS   15000
 #define FAN_SEARCH_MS  (3 * 60 * 1000)
 #define FAN_IDLE_MS    60000
-#define FAN_RESCAN     30             // 用路徑讀幾次後重新查詢 (約 5 分鐘)
-#define FAN_PERIOD_MS  10000          // 有風扇時的讀取間隔：DCM 查詢很重，2 秒一次讓 WmiPrvSE 多用一個核心約 12~21% (實測)
+#define FAN_RESCAN_MS  (5 * 60 * 1000) // 用路徑讀多久後重新查詢
+#define FAN_KICK_DEG   3              // 封裝溫度比近期低點高這麼多度就提早讀
+// 有風扇時的讀取間隔：DCM 查詢很重，2 秒一次讓 WmiPrvSE 多用一個核心約 12~21% (實測)。
+// 轉速穩定時拉長；溫度上升會提早讀，但不會比 FAN_PERIOD_MS 更頻繁 (test_app.c 會改短)
+#ifndef FAN_PERIOD_MS
+#define FAN_PERIOD_MS  10000
+#define FAN_SLOW_MS    30000
+#endif
 
 static CRITICAL_SECTION fan_lock;
 static int      fan_state = -1;        // -1 = 沒有風扇感應器、0 = 曾經有但暫時讀不到、>0 = 風扇數
 static int      fan_rpms[MAX_FANS];    // fan_state > 0 時有效；以上兩個都受 fan_lock 保護
-static HANDLE   fan_thread, fan_stop;
+static HANDLE   fan_thread, fan_stop, fan_wake;
 static HWND     main_hwnd;
 
 static IWbemServices *wmi_connect(void)
@@ -285,7 +298,7 @@ static int reget_fans(IWbemServices *svc, int *rpm)
     return fan_paths_n;
 }
 
-// 每 FAN_RESCAN 次讀取重新查詢一次，風扇數量變了也找得到
+// 定期重新查詢一次，風扇數量變了也找得到
 static int read_fans(IWbemServices *svc, int *rpm, int fresh)
 {
     int n = fresh ? -1 : reget_fans(svc, rpm);
@@ -311,29 +324,51 @@ static DWORD WINAPI fan_worker(void *arg)
     CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
 
     IWbemServices *svc = NULL;
-    int had_fans = 0;
-    ULONGLONG give_up = GetTickCount64() + FAN_SEARCH_MS;
-    DWORD wait = 0;
-    int reads = 0;
-    while (WaitForSingleObject(fan_stop, wait) == WAIT_TIMEOUT) {
-        int rpm[MAX_FANS], n = -1;
+    HANDLE events[] = { fan_stop, fan_wake };
+    int had_fans = 0, paused = 0, prev[MAX_FANS], prev_n = 0;
+    ULONGLONG give_up = GetTickCount64() + FAN_SEARCH_MS, next_query = 0, last_read = 0;
+    DWORD wait = 0, why;
+    while ((why = WaitForMultipleObjects(2, events, FALSE, wait)) == WAIT_TIMEOUT || why == WAIT_OBJECT_0 + 1) {
+        // 螢幕關閉或不顯示就不讀，等 UI 執行緒叫醒；不顯示但還沒找到風扇時要繼續找，選單才有這個開關
+        if (display_off || (!show_fan && had_fans)) {
+            paused = 1;
+            wait = INFINITE;
+            continue;
+        }
+        ULONGLONG now = GetTickCount64();
+        if (why != WAIT_TIMEOUT && now - last_read < FAN_PERIOD_MS) { // 被叫醒也要維持最短間隔
+            wait = (DWORD)(last_read + FAN_PERIOD_MS - now);
+            continue;
+        }
+        last_read = now;
+        if (paused) { // 暫停的時間不算在找不到風扇的時間裡
+            paused = 0;
+            give_up = now + FAN_SEARCH_MS;
+        }
+
+        int rpm[MAX_FANS], n = -1, fresh = now >= next_query;
         if (!svc) svc = wmi_connect();
-        if (svc && (n = read_fans(svc, rpm, reads++ % FAN_RESCAN == 0)) < 0) { // 連線斷了 (例如 WMI 服務重啟)：丟掉，下一輪重連
+        if (svc && (n = read_fans(svc, rpm, fresh)) < 0) { // 連線斷了 (例如 WMI 服務重啟)：丟掉，下一輪重連
             IWbemServices_Release(svc);
             svc = NULL;
         }
         if (n > 0) {
+            if (fresh) next_query = now + FAN_RESCAN_MS;
             had_fans = 1;
-            give_up = GetTickCount64() + FAN_SEARCH_MS;
+            give_up = now + FAN_SEARCH_MS;
             publish_fans(n, rpm);
-            wait = FAN_PERIOD_MS;
+            wait = fan_stable(prev, prev_n, rpm, n) ? FAN_SLOW_MS : FAN_PERIOD_MS;
+            prev_n = n;
+            for (int i = 0; i < n; i++) prev[i] = rpm[i];
             continue;
         }
-        if (GetTickCount64() < give_up) {
+        prev_n = 0;
+        if (now < give_up) {
             if (had_fans) publish_fans(0, rpm); // 剛讀不到：圖示留著顯示 "--"，很快重試
             wait = FAN_RETRY_MS;
         } else {
             publish_fans(-1, NULL);             // 很久都沒有風扇：拿掉圖示，偶爾看一下 (之後才裝 DCM 也能出現)
+            had_fans = 0;
             wait = FAN_IDLE_MS;
         }
     }
@@ -349,6 +384,7 @@ static void start_fans(HWND hwnd)
     main_hwnd = hwnd;
     InitializeCriticalSection(&fan_lock);
     fan_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    fan_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     // 只做 WMI 查詢，不需要預設的 1 MB 堆疊
     fan_thread = CreateThread(NULL, 256 * 1024, fan_worker, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
 }
@@ -573,6 +609,18 @@ static void update_fan(int force)
     if (old) DestroyIcon(old);
 }
 
+// 溫度比近期低點高 FAN_KICK_DEG 度就叫背景執行緒提早讀：風扇很可能正要加速，穩定時的讀取間隔又比較長
+static void kick_fans(int t)
+{
+    static int low = 9999;
+    if (t < 0) return;
+    if (t < low) low = t;
+    else if (t >= low + FAN_KICK_DEG) {
+        low = t;
+        SetEvent(fan_wake);
+    }
+}
+
 static void update(int force)
 {
     update_usage(force);
@@ -580,25 +628,31 @@ static void update(int force)
 
     int t = read_temp();
     int cores[MAX_CORES];
-    if (pio && ncores) read_cores(cores);
+    int hover = GetTickCount64() < hover_until;
+    if (hover && pio && ncores) read_cores(cores);
 
     wchar_t fan[40] = L"";
-    int rpm[MAX_FANS], nfans = get_fans(rpm);
+    int rpm[MAX_FANS], nfans = show_fan ? get_fans(rpm) : 0;
+    if (nfans > 0) kick_fans(t);
     int fan_len = nfans > 0 ? fan_format(fan + 1, 39, rpm, nfans) : 0;
     if (fan_len) fan[0] = L'\n', fan_len++;
 
-    // 提示文字每次都更新 (核心溫度會變)，圖示只有封裝溫度變了才重畫；風扇那行留在最後
+    // 提示文字沒變就不送給 Explorer (跨行程)，圖示只有封裝溫度變了才重畫；風扇那行留在最後
+    wchar_t tip[128];
     int n;
-    if (t < 0) n = _snwprintf(nid.szTip, 128, L"CPU 溫度讀取失敗\n%ls", err_msg);
+    if (t < 0) n = _snwprintf(tip, 128, L"CPU 溫度讀取失敗\n%ls", err_msg);
     else {
-        n = _snwprintf(nid.szTip, 128, L"CPU 封裝 %d °C  (TjMax %d)", t, tjmax);
-        for (int i = 0; i < ncores && n > 0 && n < 110 - fan_len; i++)
-            n += _snwprintf(nid.szTip + n, 128 - n, L"%ls核心%d: %d°C", i % 2 ? L"   " : L"\n", i, cores[i]);
+        n = _snwprintf(tip, 128, L"CPU 封裝 %d °C  (TjMax %d)", t, tjmax);
+        for (int i = 0; hover && i < ncores && n > 0 && n < 110 - fan_len; i++)
+            n += _snwprintf(tip + n, 128 - n, L"%ls核心%d: %d°C", i % 2 ? L"   " : L"\n", i, cores[i]);
     }
-    if (n > 0 && n + fan_len < 128) wcscpy(nid.szTip + n, fan);
-    nid.szTip[127] = 0;
-    SetWindowTextW(nid.hWnd, nid.szTip); // 隱藏視窗的標題 = 提示文字，讓自動測試讀得到
-    nid.uFlags = NIF_TIP;
+    if (n > 0 && n + fan_len < 128) wcscpy(tip + n, fan);
+    tip[127] = 0;
+    int tip_changed = wcscmp(tip, nid.szTip) != 0;
+    if (tip_changed) {
+        wcscpy(nid.szTip, tip);
+        SetWindowTextW(nid.hWnd, tip); // 隱藏視窗的標題 = 提示文字，讓自動測試讀得到
+    }
 
     if (t != last_shown || force) {
         last_shown = t;
@@ -608,11 +662,44 @@ static void update(int force)
         HICON old = cur_icon;
         cur_icon = make_icon(txt, temp_color(t), -1);
         nid.hIcon = cur_icon;
-        nid.uFlags |= NIF_ICON;
+        nid.uFlags = NIF_TIP | NIF_ICON;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
         if (old) DestroyIcon(old);
-    } else {
+    } else if (tip_changed) {
+        nid.uFlags = NIF_TIP;
         Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
+// 滑鼠移到溫度圖示上：第一次馬上更新，提示文字跳出來時才有最新的核心溫度
+static void hover_temp_icon(void)
+{
+    ULONGLONG now = GetTickCount64();
+    int first = now >= hover_until;
+    hover_until = now + HOVER_MS;
+    if (first) update(0);
+}
+
+// 容許延後一成，讓系統把這次喚醒和其他工作排在一起
+static void start_timer(HWND hwnd)
+{
+    SetCoalescableTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL, interval_sec * 100);
+}
+
+// GUID_SESSION_DISPLAY_STATUS；自己定義就不用連結 uuid 函式庫。用 session 版才涵蓋遠端桌面，主控台的螢幕關著也還要更新
+static const GUID display_status_guid = { 0x2b84c20e, 0xad23, 0x4ddf, { 0x93, 0xdb, 0x05, 0xff, 0xbd, 0x7e, 0xfc, 0xa5 } };
+
+// 螢幕關閉時沒人看得到圖示：停止更新和讀取風扇，開啟時馬上補一次
+static void set_display(HWND hwnd, int on)
+{
+    if (on == !display_off) return;
+    display_off = !on;
+    if (on) {
+        start_timer(hwnd);
+        update(0);
+        SetEvent(fan_wake);
+    } else {
+        KillTimer(hwnd, ID_TIMER);
     }
 }
 
@@ -648,7 +735,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_TRAY:
         if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) show_menu(hwnd);
+        else if (LOWORD(lp) == WM_MOUSEMOVE && wp == nid.uID) hover_temp_icon();
         return 0;
+    case WM_POWERBROADCAST:
+        if (wp == PBT_POWERSETTINGCHANGE) {
+            const POWERBROADCAST_SETTING *s = (const POWERBROADCAST_SETTING *)lp;
+            if (!memcmp(&s->PowerSetting, &display_status_guid, sizeof(GUID)) && s->DataLength >= 1)
+                set_display(hwnd, s->Data[0] != 0); // 0 = 關閉、1 = 開啟、2 = 變暗 (還看得到)
+        }
+        return TRUE;
     case WM_SETTINGCHANGE: // 切換淺色/深色工作列時換字色
         if (lp && !lstrcmpW((LPCWSTR)lp, L"ImmersiveColorSet")) { read_theme(); update(1); }
         return 0;
@@ -666,13 +761,14 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (get_fans(rpm) < 0) return 0; // 沒有風扇時選單不會有這項
             show_fan = !show_fan;
             reg_set(L"ShowFan", show_fan);
-            update_fan(1);
+            if (show_fan) SetEvent(fan_wake);
+            update(0);
             return 0;
         }
         if (LOWORD(wp) > ID_INTERVAL && valid_interval(LOWORD(wp) - ID_INTERVAL)) {
             interval_sec = LOWORD(wp) - ID_INTERVAL;
             reg_set(L"Interval", interval_sec);
-            SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
+            start_timer(hwnd);
         }
         return 0;
     case WM_DESTROY:
@@ -734,7 +830,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     start_fans(hwnd);
 
     update(1);
-    SetTimer(hwnd, ID_TIMER, interval_sec * 1000, NULL);
+    start_timer(hwnd);
+    RegisterPowerSettingNotification(hwnd, &display_status_guid, DEVICE_NOTIFY_WINDOW_HANDLE); // 註冊後會先收到目前狀態
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); // 釋放啟動時的暫用記憶體
 
     MSG m;
